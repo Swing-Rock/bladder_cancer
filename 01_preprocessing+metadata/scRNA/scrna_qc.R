@@ -15,7 +15,7 @@
 #
 # Per sample, the pipeline:
 #   1. reads the counts (10x folder, 10x .h5, dense text table, or .rds)
-#   2. calls cells with emptyDrops if the matrix is unfiltered (is_filtered = FALSE)
+#   2. detects whether the matrix still contains empty droplets and, if so, calls cells with emptyDrops
 #   3. computes QC metrics (UMIs, genes, % mito; % ribo and % hemoglobin are reported only)
 #   4. removes outliers using per-sample MAD thresholds
 #   5. removes doublets with scDblFinder
@@ -33,7 +33,9 @@
 ## =============================================================================
 ## Settings (used when no command-line arguments are given)
 ## =============================================================================
-SAMPLE_SHEET_PATH <- "C:/ongkeko lab works/bladder cancer/data/GSE130001/samplesheet_GSE130001.csv"
+# Relative to the repo root (where "bladder cancer.Rproj" is), so it works on anyone's copy.
+# Open the .Rproj in RStudio (or run Rscript from the repo root) and this path resolves.
+SAMPLE_SHEET_PATH <- "datasets/GSE130001/samplesheet_GSE130001.csv"
 OUT_DIR           <- NULL   # NULL = "<folder of the sample sheet>/qc_output"
 
 ## =============================================================================
@@ -45,7 +47,7 @@ DEFAULTS <- list(
   format            = "auto",     # auto | 10x | 10x_h5 | dense | dense_t | rds
   gene_column       = 2,          # 10x features file: 1 = Ensembl ID, 2 = gene symbol
   mito_pattern      = "^MT-",     # regex for mitochondrial genes (human gene symbols)
-  is_filtered       = TRUE,       # FALSE = raw droplet matrix; cells called with emptyDrops
+  is_filtered       = "auto",     # auto = detect from the matrix; TRUE = cells only; FALSE = raw droplets (emptyDrops)
   raw_path          = NA,         # optional raw (unfiltered) matrix -> DecontX background
   # cell filters
   nmads_low         = 3,          # MADs below the median (log scale) for UMIs/genes
@@ -62,15 +64,16 @@ DEFAULTS <- list(
   doublet_rate      = NA,         # blank = scDblFinder default (~1% per 1,000 cells)
   run_decontx       = TRUE,
   max_contamination = NA,         # e.g. 0.5 removes cells >50% ambient; blank = keep all
-  # cell calling (only when is_filtered = FALSE)
+  # cell calling (only for raw matrices); emptydrops_lower is also the "empty" UMI level used by auto-detection
   emptydrops_lower  = 100,        # droplets with <= this many UMIs define "empty"
   emptydrops_fdr    = 0.001,
   # genes and reproducibility
   min_cells_gene    = 3,          # keep genes seen in >= this many of the sample's kept cells
   seed              = 1234
 )
-LOGICAL_PARAMS   <- c("is_filtered", "run_doublets", "run_decontx")
-CHARACTER_PARAMS <- c("dataset", "format", "mito_pattern", "raw_path")
+LOGICAL_PARAMS   <- c("run_doublets", "run_decontx")
+RAW_FRACTION     <- 0.5                         # matrix counts as raw if more than this share of barcodes are empty-looking
+CHARACTER_PARAMS <- c("dataset", "format", "mito_pattern", "raw_path", "is_filtered")
 NUMERIC_PARAMS   <- setdiff(names(DEFAULTS), c(LOGICAL_PARAMS, CHARACTER_PARAMS))
 KNOWN_FORMATS    <- c("10x", "10x_h5", "dense", "dense_t", "rds")
 
@@ -120,14 +123,14 @@ resolve_path <- function(p, sheet_dir) {
   if (!is_absolute(p)) p <- file.path(sheet_dir, p)
   normalizePath(p, winslash = "/", mustWork = FALSE)
 }
-# convert T/F strings to bool
+
 parse_logical <- function(x) {
   v <- toupper(trimws(x))
   if (v %in% c("TRUE", "T", "YES", "Y", "1")) return(TRUE)
   if (v %in% c("FALSE", "F", "NO", "N", "0")) return(FALSE)
   NA
 }
-# if selected auto mode, detect mode based on which files exist 
+
 guess_format <- function(p) {
   if (dir.exists(p)) return("10x")
   if (grepl("\\.h5$", p, ignore.case = TRUE)) return("10x_h5")
@@ -145,7 +148,10 @@ resolve_sample <- function(row, i, sheet_dir) {
   for (nm in names(DEFAULTS)) {
     if (!nm %in% names(row) || is.na(row[[nm]])) next
     v <- row[[nm]]
-    if (nm %in% LOGICAL_PARAMS) {
+    if (nm == "is_filtered") {
+      v <- if (tolower(trimws(v)) == "auto") "auto" else as.character(parse_logical(v))
+      if (is.na(v)) add("[%s] is_filtered must be auto, TRUE or FALSE, got '%s'", sid, row[[nm]])
+    } else if (nm %in% LOGICAL_PARAMS) {
       v <- parse_logical(v)
       if (is.na(v)) add("[%s] %s must be TRUE/FALSE, got '%s'", sid, nm, row[[nm]])
     } else if (nm %in% NUMERIC_PARAMS) {
@@ -209,7 +215,7 @@ check_packages <- function(samples) {
   need <- c()
   if (any(vapply(samples, function(p) p$run_doublets, TRUE))) need <- c(need, "SingleCellExperiment", "scDblFinder")
   if (any(vapply(samples, function(p) p$run_decontx, TRUE)))  need <- c(need, "celda")
-  if (any(!vapply(samples, function(p) p$is_filtered, TRUE))) need <- c(need, "DropletUtils")
+  if (any(vapply(samples, function(p) p$is_filtered == "FALSE", TRUE))) need <- c(need, "DropletUtils")
   if (any(vapply(samples, function(p) p$format == "10x_h5", TRUE))) need <- c(need, "hdf5r")
   missing_pkgs <- need[!vapply(need, requireNamespace, TRUE, quietly = TRUE)]
   if (length(missing_pkgs)) {
@@ -338,12 +344,43 @@ load_sample <- function(p) {
   m
 }
 
+# Is this a raw droplet matrix? Raw matrices are mostly empty barcodes (a few UMIs each);
+# filtered matrices have almost none. Returns list(raw = TRUE/FALSE, frac_empty, n_empty).
+detect_raw <- function(m, lower) {
+  n_empty <- sum(Matrix::colSums(m) <= lower)
+  frac <- n_empty / max(ncol(m), 1)
+  list(raw = frac > RAW_FRACTION, frac_empty = frac, n_empty = n_empty)
+}
+
+# Decide whether to call cells, checking the sheet's is_filtered against what the matrix looks like
+resolve_filter_state <- function(m, p) {
+  d <- detect_raw(m, p$emptydrops_lower)
+  looks <- if (d$raw) "raw (mostly empty droplets)" else "filtered (cells only)"
+  evidence <- sprintf("%s of %s barcodes have <= %d UMIs (%.1f%%)", format(d$n_empty, big.mark = ","),
+                      format(ncol(m), big.mark = ","), as.integer(p$emptydrops_lower), 100 * d$frac_empty)
+  if (p$is_filtered == "auto") {
+    log_msg("[%s] matrix looks %s: %s", p$sample_id, looks, evidence)
+    return(!d$raw)
+  }
+  said_filtered <- p$is_filtered == "TRUE"
+  if (said_filtered == d$raw) {
+    stop(sprintf("is_filtered = %s in the sample sheet, but the matrix looks %s: %s. Check the path (filtered_ vs raw_ matrix), or set is_filtered to auto.",
+                 p$is_filtered, looks, evidence))
+  }
+  log_msg("[%s] is_filtered = %s, consistent with the matrix: %s", p$sample_id, p$is_filtered, evidence)
+  said_filtered
+}
+
 # Step 2: call cells on unfiltered data, and collect empty droplets as DecontX background.
-# Returns list(counts = cells only, background = empty droplets or NULL, n_barcodes).
+# Returns list(counts = cells only, background = empty droplets or NULL, n_barcodes, matrix_type).
 call_cells <- function(m, p) {
   background <- NULL
   n_barcodes <- ncol(m)
-  if (!p$is_filtered) {
+  is_filtered <- resolve_filter_state(m, p)
+  if (!is_filtered) {
+    if (!requireNamespace("DropletUtils", quietly = TRUE))
+      stop("this is a raw matrix, so cells must be called with emptyDrops, but DropletUtils is not installed: BiocManager::install(\"DropletUtils\")")
+    if (!is.na(p$raw_path)) log_msg("[%s] raw_path ignored: the main matrix is already raw and supplies its own empty droplets", p$sample_id)
     ed <- DropletUtils::emptyDrops(m, lower = p$emptydrops_lower)
     is_cell <- !is.na(ed$FDR) & ed$FDR <= p$emptydrops_fdr
     background <- m
@@ -359,7 +396,8 @@ call_cells <- function(m, p) {
     background <- background[, Matrix::colSums(background) > 0, drop = FALSE]
     background <- align_rows(background, rownames(m))
   }
-  list(counts = m, background = background, n_barcodes = n_barcodes)
+  list(counts = m, background = background, n_barcodes = n_barcodes,
+       matrix_type = if (is_filtered) "filtered" else "raw (emptyDrops)")
 }
 
 # Step 3: per-cell QC metrics (one row per cell)
@@ -416,29 +454,42 @@ apply_cell_filters <- function(meta, th, p) {
   meta
 }
 
-# Step 5: doublets with scDblFinder, on raw counts of cells still kept
+# The score above which scDblFinder called cells doublets. scDblFinder stores it in the
+# object's metadata; if it's missing, use the lowest score among cells it called doublets.
+doublet_cutoff <- function(res) {
+  thr <- tryCatch(S4Vectors::metadata(res)$scDblFinder.threshold, error = function(e) NULL)
+  if (is.numeric(thr) && length(thr) == 1 && is.finite(thr)) return(thr)
+  s <- res$scDblFinder.score[res$scDblFinder.class == "doublet"]
+  if (length(s)) min(s) else NA_real_
+}
+
+# Step 5: doublets with scDblFinder, on raw counts of cells still kept.
+# Returns list(meta, threshold): threshold is the doublet score cutoff (NA if not run).
 detect_doublets <- function(meta, m, p) {
   meta$scDblFinder.score <- NA_real_
   meta$scDblFinder.class <- NA_character_
-  if (!p$run_doublets) return(meta)
+  skipped <- list(meta = meta, threshold = NA_real_)
+  if (!p$run_doublets) return(skipped)
   keep <- meta$cell[meta$keep]
   if (length(keep) < 50) {
     log_msg("[%s] WARNING: only %d cells; skipping doublet detection", p$sample_id, length(keep))
-    return(meta)
+    return(skipped)
   }
   res <- tryCatch({
     sce <- SingleCellExperiment::SingleCellExperiment(assays = list(counts = m[, keep]))
     set.seed(p$seed)
     if (is.na(p$doublet_rate)) scDblFinder::scDblFinder(sce) else scDblFinder::scDblFinder(sce, dbr = p$doublet_rate)
   }, error = function(e) { log_msg("[%s] WARNING: scDblFinder failed (%s); no doublets removed", p$sample_id, conditionMessage(e)); NULL })
-  if (is.null(res)) return(meta)
+  if (is.null(res)) return(skipped)
   meta[keep, "scDblFinder.score"] <- res$scDblFinder.score
   meta[keep, "scDblFinder.class"] <- as.character(res$scDblFinder.class)
   dbl <- keep[res$scDblFinder.class == "doublet"]
   meta[dbl, "qc_reason"] <- "doublet"
   meta[dbl, "keep"] <- FALSE
-  log_msg("[%s] scDblFinder: %d doublets among %d cells", p$sample_id, length(dbl), length(keep))
-  meta
+  thr <- doublet_cutoff(res)
+  log_msg("[%s] scDblFinder: %d doublets among %d cells (%.1f%%; score cutoff %.3f)",
+          p$sample_id, length(dbl), length(keep), 100 * length(dbl) / length(keep), thr)
+  list(meta = meta, threshold = thr)
 }
 
 # Step 6: ambient RNA with DecontX, on cells still kept. Returns list(meta, decontx_counts).
@@ -474,8 +525,13 @@ qc_one_sample <- function(p) {
   m       <- called$counts
   meta    <- compute_qc_metrics(m, p)                           # 3. metrics
   th      <- compute_thresholds(meta, p, called$n_barcodes)     # 4a. cutoffs
+  th$input_matrix <- called$matrix_type
   meta    <- apply_cell_filters(meta, th, p)                    # 4b. filter
-  meta    <- detect_doublets(meta, m, p)                        # 5. doublets
+  dbl     <- detect_doublets(meta, m, p)                        # 5. doublets
+  meta    <- dbl$meta
+  th$doublet_threshold <- round(dbl$threshold, 4)
+  scored  <- !is.na(meta$scDblFinder.class)
+  th$doublet_pct       <- if (any(scored)) round(100 * mean(meta$qc_reason[scored] == "doublet"), 2) else NA_real_
   amb     <- correct_ambient(meta, m, called$background, p)     # 6. ambient RNA
   meta    <- amb$meta
 
@@ -564,10 +620,20 @@ make_plots <- function(meta, thresholds, plot_dir) {
 
   d <- meta[!is.na(meta$scDblFinder.score), ]
   if (nrow(d)) {
+    cut_df <- thresholds[is.finite(thresholds$doublet_threshold), c("sample", "doublet_threshold", "doublet_pct")]
     p4 <- ggplot(d, aes(scDblFinder.score, fill = scDblFinder.class)) + geom_histogram(bins = 50) +
       facet_wrap(~ sample, ncol = nc, scales = "free_y") +
       scale_fill_manual(values = c(singlet = "grey70", doublet = "#009E73")) +
-      labs(title = "scDblFinder doublet scores", x = "doublet score", y = "cells", fill = NULL)
+      labs(title = "scDblFinder doublet scores",
+           subtitle = "Dashed line = this sample's cutoff; cells to the right are called doublets",
+           x = "doublet score", y = "cells", fill = NULL)
+    if (nrow(cut_df)) {
+      p4 <- p4 +
+        geom_vline(data = cut_df, aes(xintercept = doublet_threshold), linetype = "dashed", colour = "red3") +
+        geom_text(data = cut_df, inherit.aes = FALSE, size = 3, hjust = 1.05, vjust = 1.5, colour = "red3",
+                  aes(x = doublet_threshold, y = Inf,
+                      label = sprintf("cutoff %.3f\n%.1f%% doublets", doublet_threshold, doublet_pct)))
+    }
     ggsave(file.path(plot_dir, "04_doublet_scores.png"), p4, width = w, height = 3 * nr + 0.5, dpi = 150, limitsize = FALSE)
   }
   d <- meta[!is.na(meta$decontX_contamination), ]
@@ -586,7 +652,6 @@ write_dataset_outputs <- function(rs, ds_dir) {
   th_all   <- do.call(rbind, lapply(rs, `[[`, "thresholds"))
   sm       <- do.call(rbind, lapply(rs, summarise_sample))
   rownames(meta_all) <- meta_all$cell
-  write.csv(sm,       file.path(ds_dir, "qc_summary.csv"), row.names = FALSE)
   write.csv(th_all,   file.path(ds_dir, "qc_thresholds.csv"), row.names = FALSE)
   write.csv(meta_all, file.path(ds_dir, "cell_qc_metadata.csv"), row.names = FALSE)
 
@@ -620,7 +685,8 @@ write_overview <- function(summaries, failures, samples, out_dir) {
 ## =============================================================================
 main <- function(sample_sheet_path = SAMPLE_SHEET_PATH, out_dir = OUT_DIR) {
   # 1. Set up the output folder and log
-  if (!file.exists(sample_sheet_path)) stop("Sample sheet not found: ", sample_sheet_path)
+  if (!file.exists(sample_sheet_path)) stop("Sample sheet not found: ", sample_sheet_path,
+                                            "\n(current working directory: ", getwd(), ")")
   sheet_dir <- dirname(normalizePath(sample_sheet_path, winslash = "/"))
   if (is.null(out_dir)) out_dir <- file.path(sheet_dir, "qc_output")
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
@@ -647,9 +713,8 @@ main <- function(sample_sheet_path = SAMPLE_SHEET_PATH, out_dir = OUT_DIR) {
     summaries[[ds]] <- write_dataset_outputs(rs, file.path(out_dir, ds))
   }
 
-  # 5. Run-level summary and package versions
+  # 5. Run-level summary
   write_overview(summaries, failures, samples, out_dir)
-  writeLines(capture.output(sessionInfo()), file.path(out_dir, "sessionInfo.txt"))
   log_msg("Done: %d sample(s) OK, %d failed. Outputs in %s", length(results), length(failures), out_dir)
 
   invisible(list(results = results, failures = failures, out_dir = out_dir))

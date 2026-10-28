@@ -1,7 +1,7 @@
 sample_id,dataset,path,format,gene_column,mito_pattern,is_filtered,raw_path,nmads_low,nmads_high,nmads_mito,min_counts,min_features,max_counts,max_features,mito_floor,mito_ceiling,run_doublets,doublet_rate,run_decontx,max_contamination,emptydrops_lower,emptydrops_fdr,min_cells_gene,seed,notes
-patient1,my_study,data/patient1/filtered_feature_bc_matrix,10x,,,,,,,,,,,,,,,,,,,,,,Cell Ranger folder; blank cells = defaults
-patient2,my_study,data/patient2/filtered_feature_bc_matrix.h5,10x_h5,,,,data/patient2/raw_feature_bc_matrix,,,,,,,,,,,,,0.5,,,,,h5 + raw droplets as DecontX background; drop cells >50% ambient
-patient3,my_study,data/patient3/raw_feature_bc_matrix,10x,,,FALSE,,,,,,,,,,,,,,,,,,,unfiltered matrix: emptyDrops calls cells first
-geo1,other_study,data/GSE000000_counts.csv.gz,dense,,,,,,,,,,,,,,,,,,,,,,"genes in rows, cells in columns"
-geo2,other_study,data/GSE000000_cells_x_genes.tsv,dense_t,,,,,,,,500,300,,6000,,,,,,,,,,,cells in rows; stricter genes floor and a gene cap
-geo3,other_study,data/GSE000001_seurat.rds,rds,,,,,,,,,,,,,,,0.08,FALSE,,,,,,Seurat object; custom doublet rate; skip DecontX
+patient1,my_study,data/patient1/filtered_feature_bc_matrix,10x,,,,,,,,,,,,,,,,,,,,,,
+patient2,my_study,data/patient2/filtered_feature_bc_matrix.h5,10x_h5,,,,,,,,,,,,,,,,,,,,,,
+patient3,my_study,data/patient3/raw_feature_bc_matrix,10x,,,,,,,,,,,,,,,,,,,,,,
+geo1,other_study,data/GSE000000_counts.csv.gz,dense,,,,,,,,,,,,,,,,,,,,,,
+geo2,other_study,data/GSE000000_cells_x_genes.tsv,dense_t,,,,,,,,,,,,,,,,,,,,,,
+geo3,other_study,data/GSE000001_seurat.rds,rds,,,,,,,,,,,,,,,,,,,,,,

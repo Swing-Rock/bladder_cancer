@@ -1,0 +1,5 @@
+sample_id,dataset,path,format,gene_column,mito_pattern,nmads_low,nmads_high,nmads_mito,min_counts,min_features,max_counts,max_features,mito_floor,mito_ceiling,min_spots_gene,seed,notes
+slide1_A1,my_visium_study,data/slide1_A1/outs,spaceranger,,,,,,,,,,,,,,"Space Ranger outs/ folder: filtered_feature_bc_matrix.h5 + spatial/"
+GSM0000001,geo_visium_study,data/GSM0000001,spaceranger,,,,,,,,,,,,,,"GEO download: prefixed files, .gz images; features.tsv may sit one folder up"
+old1,old_study,data/old_visium_seurat.rds,rds,,,,,,,,,,,,,,"Seurat object with a Spatial assay and image"
+slide2_B1,my_visium_study,data/slide2_B1/outs,spaceranger,,,4,,,,,,,,30,,,"looser low-side cutoff and higher mito ceiling for a fragile section"

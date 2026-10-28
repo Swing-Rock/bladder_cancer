@@ -2,12 +2,10 @@
 
 `scrna_qc.R` runs quality control on any number of single-cell RNA-seq samples. You list your samples in a CSV (one row per sample) and run one command. For each sample, it removes broken, dying and doublet cells, estimates ambient-RNA contamination, and saves a clean Seurat object, plus tables and plots that show exactly what was removed and why.
 
-- **One row per sample, one `.rds` per sample.** Samples are never merged.
+- **One row per sample.** 
 - **Data-driven cutoffs.** Each sample is judged against its own distribution, not a fixed rule.
-- **Many input formats.** Cell Ranger folders, `.h5`, dense CSV/TSV tables, and Seurat/SCE `.rds` files.
+- **Accomodates many input formats.** Cell Ranger folders, `.h5`, dense CSV/TSV tables, and Seurat/SCE `.rds` files.
 - **Fails safely.** The whole sample sheet is checked before anything runs, and one broken sample doesn't stop the others.
-
-> Human data only. Mitochondrial, ribosomal and hemoglobin genes are matched with human gene-symbol patterns.
 
 ---
 
@@ -28,34 +26,33 @@
 
 ## Quick start
 
-**1. Write a sample sheet.** Only `sample_id` and `path` are required:
+**1. Write a sample sheet.** Only `sample_id` and `path` are required, though the `format` column is highly recommended:
 
 ```csv
-sample_id,dataset,path
-sample1,GSE130001,GSM3729178
-sample2,GSE130001,GSM3729179
+sample_id,dataset,path, format
+sample1,GSE130001,GSM3729178, 10x
+sample2,GSE130001,GSM3729179, 10x
 ```
+
+Rest of the columns are quality control parameters. Leave them as default values unless there's a specific reason to change them. Then document and report any changes made to default parameters 
 
 Relative paths are relative to the folder the sample sheet is in. Absolute paths (`C:/...`, `/home/...`) work too.
 
-**2. Run it.**
+
+**2. Run it** from the repo root (the folder with `bladder cancer.Rproj`):
 
 ```bash
-Rscript scrna_qc.R path/to/samplesheet.csv            # outputs go to <sheet folder>/qc_output/
-Rscript scrna_qc.R path/to/samplesheet.csv my_output  # or choose the output folder
+Rscript 01_preprocessing+metadata/scRNA/scrna_qc.R datasets/GSE130001/samplesheet_GSE130001.csv
+# outputs go to datasets/GSE130001/qc_output/; add a second argument to choose another output folder
 ```
 
-In RStudio, set `SAMPLE_SHEET_PATH` at the top of the script and click **Source**. After sourcing once, you can run another sheet with `main("path/to/other_sheet.csv")`.
+In RStudio,  set `SAMPLE_SHEET_PATH` at the top of the script, and click **Source**. After sourcing once, you can run another sheet with `main("datasets/<other>/samplesheet.csv")`.
 
-**3. Check the results.** Open `qc_output/all_samples_summary.csv` first, then look at the plots in each dataset folder.
+**3. Check the results.** After each run:
 
-**4. Use the cleaned data.**
-
-```r
-seu <- readRDS("qc_output/GSE130001/sample1_qc.rds")
-seu                       # RNA assay = raw counts, decontX assay = ambient-corrected counts
-head(seu[[]])             # per-cell QC metrics
-```
+1. Open `qc_output/all_samples_summary.csv`: how many cells each sample kept, and why the others were removed.
+2. Look at the plots in each dataset folder (see [Reading the QC plots](#reading-the-qc-plots)).
+3. Document and report anything unusual about the dataset in the root README's dataset table.
 
 ---
 
@@ -69,7 +66,7 @@ if (!requireNamespace("BiocManager", quietly = TRUE)) install.packages("BiocMana
 BiocManager::install(c("SingleCellExperiment", "scDblFinder", "celda"))
 
 # Only if you need them:
-BiocManager::install("DropletUtils")   # unfiltered (raw) matrices, is_filtered = FALSE
+BiocManager::install("DropletUtils")   # for unfiltered (raw) matrices when is_filtered = FALSE
 install.packages("hdf5r")              # 10x .h5 files
 ```
 
@@ -98,12 +95,11 @@ Each row is one sample. Every column except `sample_id` and `path` is optional, 
 | **What the sample is** | | |
 | `sample_id` | *required* | Unique name. Becomes the output file name (`<sample_id>_qc.rds`) and the cell-name prefix. |
 | `path` | *required* | 10x folder, `.h5`, dense table or `.rds` (see [Input formats](#input-formats)). |
-| `dataset` | `dataset1` | Output folder name. Samples in the same folder share a summary table and plot panels, but are **never merged**. |
+| `dataset` | `dataset1` | dataset name |
 | `format` | `auto` | `10x`, `10x_h5`, `dense`, `dense_t`, `rds`. `auto` guesses from the path. |
 | `gene_column` | `2` | Which column of a 10x features file names the genes: 1 = Ensembl ID, 2 = gene symbol. |
 | `mito_pattern` | `^MT-` | Regex for mitochondrial genes. Change only for unusual naming (e.g. `^GRCh38-MT-`). |
-| `is_filtered` | `TRUE` | `FALSE` = raw droplet matrix; cells are called with emptyDrops first. |
-| `raw_path` | blank | Raw (unfiltered) matrix for a filtered sample. DecontX uses its empty droplets as the ambient profile. |
+| `is_filtered` | `auto` | Whether the matrix contain empty droplets. `auto` = detected from the matrix (raw if more than half the barcodes have ≤ `emptydrops_lower` UMIs). `TRUE` = cells only. `FALSE` = raw droplet matrix; cells are called with emptyDrops first. An explicit `TRUE`/`FALSE` that contradicts the matrix stops that sample with an error. || `raw_path` | blank | Raw (unfiltered) matrix for a filtered sample. DecontX uses its empty droplets as the ambient profile. |
 | **Cell filters** | | |
 | `nmads_low` | `3` | MADs below the median (log10 scale) for UMIs and genes. |
 | `nmads_high` | `5` | MADs above the median (log10 scale) for UMIs and genes. |
@@ -127,18 +123,6 @@ Each row is one sample. Every column except `sample_id` and `path` is optional, 
 | `seed` | `1234` | Random seed for scDblFinder, DecontX and emptyDrops. |
 
 TRUE/FALSE columns accept `TRUE/FALSE`, `T/F`, `yes/no` or `1/0`.
-
-### Example: mixing input types
-
-```csv
-sample_id,dataset,path,format,is_filtered,raw_path,min_features,max_features,doublet_rate,max_contamination,notes
-p1,my_study,data/p1/filtered_feature_bc_matrix,10x,,,,,,,standard Cell Ranger output
-p2,my_study,data/p2/filtered_feature_bc_matrix.h5,10x_h5,,data/p2/raw_feature_bc_matrix,,,,0.5,raw droplets as background
-p3,my_study,data/p3/raw_feature_bc_matrix,10x,FALSE,,,,,,unfiltered: emptyDrops first
-g1,geo_study,data/GSE000000_counts.csv.gz,dense,,,,,,,genes in rows
-g2,geo_study,data/GSE000000_cells_x_genes.tsv,dense_t,,,300,6000,,,cells in rows; stricter gene floor and a gene cap
-s1,old_study,data/old_seurat.rds,rds,,,,,0.08,,Seurat object; custom doublet rate
-```
 
 ### Checks before anything runs
 
@@ -241,17 +225,9 @@ For each metric:
 
 - **Hard floors:** at least `min_counts` (500) UMIs and `min_features` (200) genes, always. This protects a uniformly poor sample, whose own median could be very low.
 - **Mito clamp:** the MAD mito cutoff is clamped between `mito_floor` (10%) and `mito_ceiling` (25%). A very clean sample can't produce an over-strict 5% cutoff, and a messy one can't produce a meaningless 40% cutoff.
-- **Optional caps:** `max_counts` and `max_features`, if you set them.
-
-**Worked example (GSE130001, sample1, 3,532 cells):**
-
-- UMIs: the median is 7,994 (log10 3.90) and the MAD is 0.25 log units. The low cutoff is 10^(3.90 − 3 × 0.25) ≈ **1,383 UMIs**, and no cells fall below it.
-- Genes: the median is 2,551, giving a low cutoff of **778 genes**. 7 cells are flagged.
-- % mito: the median is 5.85% and the MAD is 3.08, giving a cutoff of 5.85 + 3 × 3.08 = **15.1%** (inside the 10–25% clamp). 219 cells are flagged.
+- **Optional caps:** `max_counts` and `max_features`. parameters are avaliable but not set due to sample to sample variations 
 
 Each removed cell gets one `qc_reason`: the first check it failed, in the order low UMIs → high UMIs → low genes → high genes → mito.
-
-MAD-based cutoffs are always used; there is no fixed-cutoff mode. To make the filters stricter or looser, change the `nmads_*` values, the floors, the caps or the mito clamp.
 
 ### 5. Remove doublets (scDblFinder)
 
@@ -262,6 +238,8 @@ A doublet is two cells captured in one droplet. It looks like one cell expressin
 3. It scores every real cell from 0 to 1. The cutoff is set so that the number called matches the expected doublet rate: about 1% per 1,000 cells for 10x Chromium (~3% for 3,000 cells, ~10% for 10,000). Use `doublet_rate` to override this.
 
 It runs per sample, because doublets can only form within one capture. It uses raw counts. Samples with fewer than 50 cells skip this step with a warning.
+
+Each sample gets its own **doublet score cutoff**, because the cutoff depends on how many doublets that sample is expected to have. The script records it as `doublet_threshold` in `qc_thresholds.csv`, along with `doublet_pct` (the % of scored cells called doublets), and draws it as a dashed line on `04_doublet_scores.png`. It also prints it in the log, e.g. `scDblFinder: 106 doublets among 3306 cells (3.2%; score cutoff 0.967)`. The cutoff is read from scDblFinder's own output. If that's unavailable, the script uses the lowest score among the cells scDblFinder called doublets.
 
 ### 6. Estimate ambient RNA (DecontX)
 
@@ -287,11 +265,9 @@ qc_output/
 ├── all_samples_summary.csv     every sample: cells in, removed by reason, kept, status
 ├── samplesheet_resolved.csv    the final value of every parameter, per sample
 ├── qc_log.txt                  timestamped log, including warnings
-├── sessionInfo.txt             R and package versions
 └── <dataset>/
     ├── <sample_id>_qc.rds      one Seurat object per sample
-    ├── qc_summary.csv          summary rows for this folder's samples
-    ├── qc_thresholds.csv       the cutoffs actually used, per sample
+    ├── qc_thresholds.csv       the cutoffs actually used, per sample (incl. doublet score cutoff)
     ├── cell_qc_metadata.csv    every cell (kept and removed): metrics + qc_reason
     └── plots/                  01–05 PNGs, one panel per sample
 ```
@@ -301,8 +277,6 @@ qc_output/
 - `RNA` assay: raw counts of the kept cells
 - `decontX` assay: ambient-corrected counts (if DecontX ran)
 - metadata: `sample`, `dataset`, `percent.mt`, `percent.ribo`, `percent.hb`, `log10GenesPerUMI`, `scDblFinder.score`, `decontX_contamination`
-
-**For your methods section,** report the per-sample cutoffs from `qc_thresholds.csv` and the parameters from `samplesheet_resolved.csv`, not just "3 MADs". Cite the package versions from `sessionInfo.txt`.
 
 ---
 
@@ -315,10 +289,10 @@ A good cutoff trims a tail and leaves the main body of the distribution alone. I
 | `01_violin_before_after.png`: UMIs, genes, % mito, before (grey) vs after (blue), with cutoffs dashed | Only the tails are removed. | A cutoff cuts into the main body → loosen that `nmads_*`. |
 | `02_counts_vs_genes_by_reason.png`: UMIs vs genes, coloured by why each cell was removed | Removed cells sit at the bottom-left or off the diagonal. | A big coloured group sits inside the grey cloud → that rule is too strict. |
 | `03_counts_vs_mito.png`: UMIs vs % mito | High-mito cells are mostly low-UMI, i.e. damaged. | Many *high-UMI* cells are above the line → it may be a real high-mito cell type; raise `mito_ceiling`. |
-| `04_doublet_scores.png` | Most cells score near 0, with a small group near 1. | Doublets are far more than ~5–10% of a sample → check `doublet_rate`. |
+| `04_doublet_scores.png`: doublet scores, with each sample's cutoff dashed and labelled | Most cells score near 0, with a small group near 1, and the cutoff sits in the gap between them. | Doublets are far more than ~5–10% of a sample, or the cutoff cuts through a big peak → check `doublet_rate`. |
 | `05_decontX_contamination.png` | Most cells are below ~0.2. | A large group is above 0.5 → consider `max_contamination` or the `decontX` assay. |
 
-Check again after clustering: a cluster defined mainly by high mito or low UMIs, rather than by marker genes, is a quality artifact, not a cell state.
+**if you decide to make any changes to the quality control parameters, please make sure to report and document your changes**
 
 ---
 
@@ -328,7 +302,7 @@ Check again after clustering: a cluster defined mainly by high mito or low UMIs,
 | --- | --- |
 | `Sample sheet problems (nothing was run)` | Fix each listed row; the message names the row and column. |
 | `Missing packages: ...` | Install them with the command printed, or set `run_doublets` / `run_decontx` to `FALSE`. |
-| `WARNING: no genes match the mito pattern '^MT-'` | Genes are Ensembl IDs instead of symbols → set `gene_column = 2` (10x), or use a file with symbols. |
+| `WARNING: no genes match the mito pattern '^MT-'` | Gene names are Ensembl IDs, mitochondrial genes were removed, or they use a different prefix. Check head(rownames(...)); for 10x input make sure gene_column is 2, otherwise convert IDs to symbols or set mito_pattern |
 | `WARNING: counts are not whole numbers` | The file holds normalized data. Find the raw counts. |
 | `More than one matrix.mtx file in ...` | Several samples share one folder. Put each sample in its own folder. |
 | `non-numeric column(s) after the first` | The dense table is the other way round. Set `format = dense_t`. |
@@ -361,7 +335,7 @@ To change a default for everyone, edit `DEFAULTS`. To change it for one sample, 
 
 ## Where the defaults come from
 
-Most defaults follow published recommendations or benchmarks. A few are conventions, and they're labelled as such.
+Most defaults follow published recommendations or benchmarks. A few are conventions
 
 | Choice | Basis |
 | --- | --- |
@@ -370,7 +344,7 @@ Most defaults follow published recommendations or benchmarks. A few are conventi
 | 5 MADs on the high side | Lenient filtering favored by pipeComp (Germain et al. 2020), which found stringent global filters discard real subpopulations. |
 | 3 MADs for % mito | OSCA and sc-best-practices-style pipelines. |
 | `mito_floor = 10%` | Osorio & Cai: recommended 10% standard for human tissues (5% for mouse). |
-| `mito_ceiling = 25%` | Judgment call. Yates et al. 2025 found malignant cells often have higher mito %, and that common 10–20% cutoffs can remove viable tumor cells. |
+| `mito_ceiling = 25%` | Yates et al. 2025 found malignant cells often have higher mito %, and that common 10–20% cutoffs can remove viable tumor cells |
 | `min_counts = 500`, `min_features = 200`, `min_cells_gene = 3` | Convention (Seurat tutorial values). They're only floors. |
 | scDblFinder | Top performer in its authors' 16-dataset benchmark (Germain et al. 2022), which also reports it ranking best in an updated version of Xi & Li's independent benchmark. In Xi & Li's published 2021 benchmark (which predates it), DoubletFinder was the most accurate. Recommended by Heumos et al. 2023 for accuracy and speed. |
 | Doublet rate ~1% per 1,000 cells | 10x multiplet-rate table (~0.8% at 1,000 cells, ~7.6% at 10,000). |
