@@ -1,7 +1,0 @@
-sample_id,dataset,path,format,gene_column,mito_pattern,is_filtered,raw_path,nmads_low,nmads_high,nmads_mito,min_counts,min_features,max_counts,max_features,mito_floor,mito_ceiling,run_doublets,doublet_rate,run_decontx,max_contamination,emptydrops_lower,emptydrops_fdr,min_cells_gene,seed,notes
-patient1,my_study,data/patient1/filtered_feature_bc_matrix,10x,,,,,,,,,,,,,,,,,,,,,,
-patient2,my_study,data/patient2/filtered_feature_bc_matrix.h5,10x_h5,,,,,,,,,,,,,,,,,,,,,,
-patient3,my_study,data/patient3/raw_feature_bc_matrix,10x,,,,,,,,,,,,,,,,,,,,,,
-geo1,other_study,data/GSE000000_counts.csv.gz,dense,,,,,,,,,,,,,,,,,,,,,,
-geo2,other_study,data/GSE000000_cells_x_genes.tsv,dense_t,,,,,,,,,,,,,,,,,,,,,,
-geo3,other_study,data/GSE000001_seurat.rds,rds,,,,,,,,,,,,,,,,,,,,,,
