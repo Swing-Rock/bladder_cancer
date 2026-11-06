@@ -7,3 +7,4 @@ This repository holds the shared analysis code for the bladder cancer project, w
 ## qc explorer
 
 
+if you want editing access please message Shirley your github username so she can add you as a contributer
