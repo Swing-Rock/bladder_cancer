@@ -1,0 +1,4 @@
+sample_id,dataset,path,format,nmads_low,nmads_high,nmads_area,min_counts,min_features,max_counts,max_features,min_cell_area,max_cell_area,max_pct_control,min_cells_gene,seed,notes
+region1,my_xenium_study,data/region1/outs,xenium,,,,,,,,,,,,,"Xenium output folder: cell_feature_matrix.h5 (or cell_feature_matrix/) + cells.csv.gz"
+GSM0000001,geo_xenium_study,data/GSM0000001,xenium,,,,,,,,,,,,,"GEO download with prefixed files works too"
+old1,old_study,data/old_xenium_seurat.rds,rds,,,,,,,,,,,,,"Seurat object made with LoadXenium()"
