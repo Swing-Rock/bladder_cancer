@@ -24,7 +24,7 @@
 # The usual split (annotation/README.md, "Running copyKAT on Expanse"):
 #   1. locally:   annotate with malignant_method = none   -> labels saved in each <sample>.rds
 #   2. copy the QC output folder to Expanse (Globus)
-#   3. on Expanse: sbatch expanse.sbatch -> this script. The labels are reused (same cells
+#   3. on Expanse: sbatch R_scripts/annotation/copyKAT.sbatch -> this script. The labels are reused (same cells
 #      and settings), so only copyKAT runs. Results go into the same folder as always.
 #   4. copy the folder back
 #

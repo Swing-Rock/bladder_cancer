@@ -275,7 +275,7 @@ ui <- page_sidebar(
                 "cells that pass the MAD cutoffs. They run in the background; the banner at the top shows progress. With ",
                 "dataset-level processing, each step runs on every sample in memory before the next one starts. Moving a slider ",
                 "afterwards makes the results out of date: run the steps again before saving (saving doesn't run them). The annotation ",
-                "uses the Annotation panel's settings, including the malignant-cell method (copyKAT can take an hour; choose ",
+                "uses the Annotation panel's settings, including the malignant-cell method (inferCNV by default; copyKAT can take an hour; choose ",
                 "'none' there for a quick pass).")),
         conditionalPanel("input.input_mode == 'dataset'",
           h6("Dataset mode", class = "mt-2 mb-2"),
@@ -1009,6 +1009,15 @@ server <- function(input, output, session) {
     load_next_batch()
     if (length(in_memory())) session$sendCustomMessage("qc-overlay", list(id = "qc-load", show = FALSE))
   })
+
+  # copyKAT is slow: say so as soon as it's picked (the panel also keeps a note under the dropdown)
+  observeEvent(input$a_malignant_method, {
+    if (grepl("copykat", input$a_malignant_method %||% "", ignore.case = TRUE)) {
+      env <- tryCatch(get_engine("annotation"), error = function(e) NULL)
+      showNotification(div(strong("copyKAT selected. "), env$COPYKAT_WARNING %||% "copyKAT is slow and memory-hungry."),
+                       type = "warning", duration = 20)
+    }
+  }, ignoreInit = TRUE)
 
   observeEvent(input$pick_sample, {
     id <- input$pick_sample

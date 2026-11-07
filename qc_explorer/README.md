@@ -34,6 +34,33 @@ qc_explorer/
 | Deconvolution | Visium | Cell-type proportions per spot (RCTD) | On hold, waiting on an annotated bladder scRNA-seq reference | [`R_scripts/visium/`](R_scripts/visium/) |
 | QC app | all three | Sliders for cutoffs, dataset folders in batches, annotation preview, records every change from the defaults | Available | [`app_scripts/`](app_scripts/) |
 
+## Project defaults
+
+For this project, QC everyone's data with the defaults below, so samples can be compared and merged across datasets. They are the defaults in the scripts and the app, so you get them unless you change something. If you have to change one for a sample, it's recorded in `samplesheet.csv` and `log.txt`; mention it when you share results.
+
+| Step | Default | Setting |
+| --- | --- | --- |
+| Cell-type annotation | **SingleR** | `label_methods = SingleR` |
+| Annotation reference | **HPCA** only (Human Primary Cell Atlas, broad cell types). It fills `cell_label`, the label everything downstream uses | `references = HPCA`, `label_level = main` |
+| Malignant cells (scRNA-seq only) | **inferCNV** | `malignant_method = infercnv` |
+
+### When inferCNV can't run: use copyKAT
+
+inferCNV compares each cell's inferred copy-number profile with **normal reference cells from the same sample**: the immune and stromal cells, picked by their `cell_label`. It needs at least **50** of them (`cnv_min_reference`). With fewer, it skips the sample, which happens with tumour-enriched or epithelial sorts and some small samples. You'll see:
+
+- `log.txt`: `inferCNV skipped: only <n> reference (immune/stromal) cells`
+- `summary.csv`: the `malignant` column says `skipped` instead of giving counts, and the sample's cells have no `cnv_status`.
+
+**For those samples, run copyKAT instead.** It can find the normal (diploid) cells itself when there's no reference. Set `annot_malignant_method = copykat` on the sample's row in `samplesheet.csv` (or pick copyKAT in the app's Annotation panel) and annotate again. The labels are reused, so only copyKAT runs. copyKAT is slow: about an hour or more per sample, and much longer on Windows. For more than a sample or two, run it on Expanse (`R_scripts/annotation/README.md`, *Running copyKAT on Expanse*; list just those samples in `SAMPLES`).
+
+Run copyKAT the same way if inferCNV fails with an error (`log.txt`: `WARNING: inferCNV failed`).
+
+Other cases:
+
+- **Samples with no tumour cells** (e.g. sorted immune cells such as GSE149652): skip the malignant-cell step altogether (`annot_malignant_method = none`). Neither method has anything to find. See [`Unconventional_datasets.md`](Unconventional_datasets.md).
+- **Visium and Xenium**: there is no malignant-cell step. Spots mix several cells, and a targeted panel can't show copy-number changes.
+- **inferCNV not installed** (it needs JAGS; see [Requirements](#requirements)): annotation stops before it starts and lists what to install. Install it rather than switching the whole dataset to copyKAT.
+
 ## Getting started
 
 1. **Clone the repo** and open it in RStudio, with the working directory set to the repo root. The scripts' default paths assume this.
@@ -102,7 +129,7 @@ Running QC on a sample again (script or app) replaces its folder, and its earlie
 | [`R_scripts/visium/README.md`](R_scripts/visium/README.md) | Visium QC and deconvolution |
 | [`R_scripts/xenium/README.md`](R_scripts/xenium/README.md) | Xenium QC and its default filters |
 | [`R_scripts/annotation/README.md`](R_scripts/annotation/README.md) | Annotation references, settings and the malignant-cell calls |
-| [`DATASETS.md`](DATASETS.md) | GEO datasets packaged unusually (GSE149652, GSE171351, GSE246011) and how to load them |
+| [`Unconventional_datasets.md`](Unconventional_datasets.md) | GEO datasets packaged unusually (GSE149652, GSE171351, GSE246011) and how to load them |
 
 ## Requirements
 
@@ -112,7 +139,7 @@ Software to install outside R, before running `install_packages.R`:
 
 | Software | Needed for | Notes |
 | --- | --- | --- |
-| [JAGS 4](https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/) | inferCNV (`malignant_method = "infercnv"` or `"copykat+infercnv"`) | inferCNV won't install or load without it, even though the annotation script doesn't run the step that uses it. On Windows, run the `JAGS-4.x.y.exe` installer with admin rights and the default location, then restart R. Check with `library(rjags)`, which should print "Linked to JAGS 4.x.y". |
+| [JAGS 4](https://sourceforge.net/projects/mcmc-jags/files/JAGS/4.x/) | inferCNV (`malignant_method = "infercnv"`, the default, or `"copykat+infercnv"`) | inferCNV won't install or load without it, even though the annotation script doesn't run the step that uses it. On Windows, run the `JAGS-4.x.y.exe` installer with admin rights and the default location, then restart R. Check with `library(rjags)`, which should print "Linked to JAGS 4.x.y". |
 | Python 3 | installing inferCNV | Any Python 3 (inferCNV's `argparse` dependency calls it). R must find it: on Windows, tick "Add python.exe to PATH" when installing, or point R to an existing one (e.g. Anaconda) with `PYTHON="C:/path/to/python.exe"` in `~/.Renviron`. The `WindowsApps` python stub doesn't work. |
 
-Neither is needed if you don't use inferCNV: copyKAT alone works without them.
+Both are needed for the default malignant-cell method, inferCNV. Without them, choose `copykat` or `none` as `malignant_method`.

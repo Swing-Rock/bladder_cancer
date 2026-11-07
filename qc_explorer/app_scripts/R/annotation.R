@@ -21,7 +21,10 @@ annotation_param_input <- function(nm, value, env, help) {
     # one choice per method in the script's MALIGNANT_METHODS (+ its combinations), plus "none"
     ch <- env$malignant_choices()
     if (identical(value, "both")) value <- "copykat+infercnv"
-    selectInput(id, nm, ch, selected = if (value %in% ch) value else "none")
+    tagList(selectInput(id, nm, ch, selected = if (value %in% ch) value else "none"),
+            conditionalPanel("input.a_malignant_method && input.a_malignant_method.indexOf('copykat') > -1",
+                             div(class = "alert alert-warning py-2 px-2 mb-2 small", icon("triangle-exclamation"), " ",
+                                 env$COPYKAT_WARNING %||% "copyKAT is slow and memory-hungry.")))
   } else if (!is.null(ANNOT_CHOICES[[nm]])) {
     selectInput(id, nm, ANNOT_CHOICES[[nm]], selected = value)
   } else if (is.logical(d) && length(d) == 1 && !is.na(d)) {

@@ -23,13 +23,15 @@ set -euo pipefail
 # 3. RSCRIPT
 # 4. SCRIPT
 # 5. INPUT
+# 6. SAMPLES (optional)
 #
 # =============================================================================
 
 WORKDIR=/expanse/lustre/projects/csd670/<you>/qc_explorer  # the qc_explorer folder on Expanse
 RSCRIPT=/home/<you>/miniconda3/envs/<env>/bin/Rscript      # Rscript from the env with copykat installed
 SCRIPT=R_scripts/annotation/run_copykat.R                  # relative to WORKDIR or absolute
-INPUT=datasets/<ID>/qc_output                              # QC output folder (or its samplesheet.csv); add sample IDs after it to run only those
+INPUT=datasets/<ID>/qc_output                              # QC output folder (or its samplesheet.csv)
+SAMPLES=""                                                 # optional: only these samples, space-separated (blank = all)
 
 
 cd "$WORKDIR"
@@ -50,10 +52,11 @@ echo "Workdir:   $(pwd)"
 echo "Rscript:   $RSCRIPT"
 echo "Script:    $SCRIPT"
 echo "Input:     $INPUT"
+echo "Samples:   ${SAMPLES:-all}"
 echo "CPUs:      ${SLURM_CPUS_PER_TASK:-NA}"
 echo "============================================================"
 
-"$RSCRIPT" "$SCRIPT" "$INPUT"
+"$RSCRIPT" "$SCRIPT" "$INPUT" $SAMPLES
 
 echo "============================================================"
 echo "End:       $(date)"

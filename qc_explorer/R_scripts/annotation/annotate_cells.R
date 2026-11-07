@@ -65,7 +65,7 @@ PARAMS <- list(
   label_methods       = c("SingleR"), # SingleR (reference-based) and/or markers (marker-gene scores); each writes its own columns
   label_priority      = "SingleR",  # when both run: the method whose label fills `cell_label`; the other fills the cells it leaves unlabelled
   # references (SingleR)
-  references          = c("HPCA", "Blueprint"), # built-in references (names in REFERENCES below); empty = none
+  references          = c("HPCA"),  # built-in references (names in REFERENCES below); empty = none. Project default: HPCA only
   label_level         = "main",     # main = broad types (T cells, Fibroblasts, ...); fine = subtypes
   custom_reference    = NA,         # optional: path to an annotated single-cell Seurat .rds (raw counts)
   custom_label_col    = NA,         # its cell-type metadata column
@@ -86,7 +86,7 @@ PARAMS <- list(
   n_pcs               = 30,         # principal components for clustering / UMAP
   n_hvg               = 2000,       # variable genes for clustering
   # malignant cells (scRNA-seq only)
-  malignant_method    = "copykat",  # none | copykat | infercnv | copykat+infercnv (the choices come from MALIGNANT_METHODS below)
+  malignant_method    = "infercnv", # none | copykat | infercnv | copykat+infercnv (the choices come from MALIGNANT_METHODS below); copyKAT is much slower, see COPYKAT_WARNING
   cnv_reference_types = "T.?cell|T_cell|B.?cell|B_cell|Plasma|NK|Macrophage|Monocyte|Myeloid|DC|Dendritic|Neutrophil|Mast|Fibroblast|Endothelial|Smooth.?muscle|Pericyte|CD4|CD8|Treg|Erythro", # regex on cell_label (the final label): normal reference cells
   cnv_min_reference   = 50,         # fewer reference cells -> copyKAT finds its own; inferCNV is skipped
   cnv_score_quantile  = 0.95,       # inferCNV: malignant if CNV score > this quantile of the reference cells' scores ...
@@ -181,6 +181,9 @@ MALIGNANT_METHODS <- list(
     run      = function(...) run_infercnv(...))
 )
 MALIGNANT_COMBOS <- c("copykat+infercnv")
+
+# Shown (log + the QC app) whenever copyKAT is chosen
+COPYKAT_WARNING <- "copyKAT is resource-intensive: it can take an hour or more per sample (~10k cells) and use most of a laptop's memory, and on Windows it runs on a single core. For large datasets, run it on Expanse with R_scripts/annotation/run_copykat.R (see the annotation README)."
 
 # Choices for `malignant_method`, named for display ("copyKAT", "copyKAT + inferCNV", ...)
 malignant_choices <- function() {
@@ -1155,6 +1158,8 @@ main <- function(input = INPUT, params = PARAMS) {
   problems <- unlist(lapply(rp, `[[`, "problems"))
   if (length(problems)) stop(paste(c("Sample sheet problems (nothing was run):", problems), collapse = "\n  - "))
   for (p in unique(lapply(rp, `[[`, "params"))) check_packages(p)
+  uses_copykat <- vapply(rp, function(r) "copykat" %in% malignant_methods(r$params), TRUE)
+  if (any(uses_copykat)) log_msg("NOTE: copyKAT chosen for %d sample(s). %s", sum(uses_copykat), COPYKAT_WARNING)
 
   ok <- character(0); failures <- list()
   for (i in seq_len(nrow(samples))) {

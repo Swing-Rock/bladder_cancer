@@ -17,5 +17,6 @@ if (length(need)) BiocManager::install(need, update = FALSE, ask = FALSE)
 if (!requireNamespace("copykat", quietly = TRUE)) remotes::install_github("navinlabcode/copykat")
 if (!requireNamespace("infercnv", quietly = TRUE))   # needs JAGS installed first: https://mcmc-jags.sourceforge.io
   tryCatch(BiocManager::install("infercnv", update = FALSE, ask = FALSE),
-           error = function(e) message("inferCNV not installed (", conditionMessage(e), "); copyKAT alone still works"))
+           error = function(e) message("inferCNV NOT installed (", conditionMessage(e), "). It is the default malignant-cell method: ",
+                                     "install JAGS (see README > Requirements) and run this file again"))
 message("Done. Optional: install.packages(\"arrow\") for Xenium cells.parquet.")

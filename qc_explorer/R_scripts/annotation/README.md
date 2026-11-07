@@ -43,8 +43,8 @@ BiocManager::install(c("SingleR", "celldex", "scran", "BiocParallel", "Summarize
 install.packages(c("pheatmap", "viridis", "scales"))
 
 # malignant-cell calling (scRNA-seq)
-remotes::install_github("navinlabcode/copykat")   # malignant_method = "copykat" (the default)
-BiocManager::install("infercnv")                  # malignant_method = "infercnv" or "copykat+infercnv"; also needs JAGS: https://mcmc-jags.sourceforge.io
+BiocManager::install("infercnv")                  # malignant_method = "infercnv" (the default) or "copykat+infercnv"; also needs JAGS: https://mcmc-jags.sourceforge.io
+remotes::install_github("navinlabcode/copykat")   # malignant_method = "copykat" or "copykat+infercnv"
 ```
 
 The built-in references download once from ExperimentHub and are cached. On an HPC node without internet, run the script once on a login node first, or point `custom_reference` at a local object.
@@ -171,16 +171,54 @@ Set `reuse_previous = FALSE` to compute everything again. In the app, the same r
 
 ## Running copyKAT on Expanse
 
-copyKAT is slow and memory-hungry on a laptop. On Windows it also runs on a single core, so a sample of a few thousand cells can take an hour or more and tie up most of the RAM. If you don't want to run it locally, run it on Expanse with the provided sbatch script instead. There `n_cores` actually parallelizes it, and nothing on your machine can interrupt it.
+copyKAT is slow and memory-hungry on a laptop. On Windows it also runs on a single core, so a sample of a few thousand cells can take an hour or more and tie up most of the RAM. Expanse avoids both: there `n_cores` actually parallelizes it, and nothing on your machine can interrupt it.
 
-> **To be added:** the sbatch script and instructions for using it.
+Two files in this folder do it:
 
-A convenient split:
+| File | What it does |
+| --- | --- |
+| `run_copykat.R` | Runs `annotate_cells.R` on a QC output folder with `malignant_method = "copykat"` for every sample, whatever `PARAMS` or the sample sheet's `annot_*` columns say, and `n_cores` set to the CPUs Slurm gives the job. Everything else (references, `cnv_*` settings, reuse) works as in `annotate_cells.R`, so the results are the same as the app's. |
+| `copyKAT.sbatch` | The Slurm job that runs `run_copykat.R` on Expanse (8 CPUs, 32 GB, up to 24 h, account `csd670`). |
 
-1. **Locally:** run with `malignant_method = "none"` (or pick *none* in the app) to get the SingleR labels and clusters in a few minutes.
-2. **On Expanse:** run with `malignant_method = "copykat"` using the sbatch script.
+### Steps
 
-Because labels are reused when nothing they depend on has changed (see [above](#interrupted-runs-and-reruns)), copying the QC output folder (with the labelled `<sample>.rds` files) lets the Expanse run skip SingleR and go straight to copyKAT. For one sample only, set `annot_malignant_method = copykat` on its row in `samplesheet.csv`.
+1. **Locally: get the labels first.** Annotate with `malignant_method = "none"` (or pick *none* in the app and save). This takes a few minutes and saves the SingleR labels and clusters into each `<sample>.rds`.
+2. **Copy the QC output folder to Expanse** with Globus, keeping the repo layout, e.g. `/expanse/lustre/projects/csd670/<you>/qc_explorer/datasets/<ID>/qc_output/`. The `qc_explorer` code has to be there too (clone the repo).
+3. **Have an R environment on Expanse** with the annotation packages and copyKAT installed, e.g. a conda environment with R in which you run `source("install_packages.R")` once. Note the path of its `Rscript` (`which Rscript` with the environment active).
+4. **Check the setup once, on a login node.** Compute nodes may not reach the internet, and this downloads the SingleR references into the cache:
+
+   ```bash
+   cd /expanse/lustre/projects/csd670/<you>/qc_explorer
+   /path/to/env/bin/Rscript R_scripts/annotation/run_copykat.R --prefetch
+   # -> "Packages OK; SingleR references cached: ..."  (or a list of what to install)
+   ```
+
+5. **Edit `copyKAT.sbatch`.** Set your email (`--mail-user`) and the variables near the top:
+
+   | Variable | Set it to |
+   | --- | --- |
+   | `WORKDIR` | the `qc_explorer` folder on Expanse |
+   | `RSCRIPT` | the environment's `Rscript` from step 3 |
+   | `SCRIPT` | leave as `R_scripts/annotation/run_copykat.R` |
+   | `INPUT` | the QC output folder (relative to `WORKDIR`), e.g. `datasets/GSE130001/qc_output` |
+   | `SAMPLES` | optional: only these samples, space-separated, e.g. `SAMPLES="P1_tumor P2_tumor"`. Blank = every sample in the folder |
+
+6. **Submit** from the `qc_explorer` folder, so the job's logs land there:
+
+   ```bash
+   cd /expanse/lustre/projects/csd670/<you>/qc_explorer
+   sbatch R_scripts/annotation/copyKAT.sbatch
+   squeue -u $USER          # check it's queued / running
+   ```
+
+7. **Check the result.** The job writes `copyKAT_qc_bladder_cancer_<job ID>.out` / `.err`. At the end, the `.out` lists each sample with its number of copyKAT calls and its `cnv_status` counts, and `log.txt` in the QC output folder has the full log. The job **fails** (exit status 1, and a failure email) if any sample failed or ended up with no copyKAT calls. A copyKAT error otherwise only logs a warning, so this check stops a sample from silently missing its calls.
+8. **Copy the QC output folder back** with Globus. The calls are in each `<sample>.rds` and `<sample>_cells.csv`, the plots in `<sample>/annotation/`, the counts in `summary.csv`.
+
+Because labels are reused when nothing they depend on has changed (see [above](#interrupted-runs-and-reruns)), the Expanse run skips SingleR and goes straight to copyKAT. If the job is cut off (time limit, node failure), submit it again: finished samples reuse their cached copyKAT results from `working_files/`.
+
+**Resources.** On the `shared` partition, Expanse charges for whichever is larger, the CPUs or the memory (about 2 GB counts as one CPU), so 8 CPUs with 32 GB is billed like 16 CPUs. If your samples are small, lower `--mem`. If a job runs out of memory, raise `--mem` or lower `cnv_max_cells` in `PARAMS`. Samples run one after another, so `-t` must cover all of them: allow roughly an hour per ~10k-cell sample.
+
+**Samples to leave out.** `run_copykat.R` runs copyKAT on every sample it's given, even ones whose sheet says `annot_malignant_method = none`. Leave out samples with no tumour cells (e.g. sorted T cells, see `Unconventional_datasets.md` in `qc_explorer/`) by listing only the samples you want in `SAMPLES`.
 
 ---
 
@@ -192,7 +230,7 @@ All settings are in `PARAMS` at the top of the script; the app shows the same on
 | --- | --- | --- |
 | `label_methods` | `SingleR` | `SingleR`, `markers`, or both. In the app, a multi-select. |
 | `label_priority` | `SingleR` | When both run: the method that fills `cell_label` (the other fills its gaps). |
-| `references` | `HPCA`, `Blueprint` | Built-in references for SingleR (see `REFERENCES`). `Monaco` / `DICE` add fine immune subsets. |
+| `references` | `HPCA` | Built-in references for SingleR (see `REFERENCES`). HPCA only is the project default. Others (`Blueprint`, `Monaco`, `DICE`, …) can be added as extra opinions in their own columns; the first one listed is the primary. |
 | `label_level` | `main` | `main` = broad types; `fine` = subtypes. |
 | `custom_reference`, `custom_label_col` | blank | An annotated single-cell Seurat object and its label column, e.g. a published bladder atlas. **Needed for states the atlases don't have** (myCAF / iCAF, urothelial subtypes). |
 | `primary` | blank | Reference that fills `singler_label`. Blank = custom if given, else the first built-in. |
@@ -201,7 +239,7 @@ All settings are in `PARAMS` at the top of the script; the app shows the same on
 | `marker_min_score`, `marker_min_delta` | `0.1`, `0.05` | A cell's top marker score must reach `marker_min_score` (0–1) and beat the runner-up by `marker_min_delta`, or `marker_pruned` is `NA`. Raise them for stricter calls. |
 | `assay` | `RNA` | `decontX` = ambient-corrected counts from `scrna_qc.R`. |
 | `cluster_level`, `cluster_resolution` | `TRUE`, `0.8` | Per-sample clustering and cluster labels. |
-| `malignant_method` | `copykat` | `none`, `copykat`, `infercnv` or `copykat+infercnv` (formerly `cnv_method`; the old value `both` still works). |
+| `malignant_method` | `infercnv` | `none`, `copykat`, `infercnv` or `copykat+infercnv` (formerly `cnv_method`; the old value `both` still works). copyKAT is much slower and more memory-hungry: the app warns when it's chosen, and the log notes it. For large datasets, run it on Expanse (see [Running copyKAT on Expanse](#running-copykat-on-expanse)). |
 | `cnv_reference_types` | immune + stromal regex | Regex on the final label (`cell_label`) picking the normal reference cells. It covers the built-in marker types (T_cells, Myeloid, Fibroblasts, …) and the common reference names; check it matches your custom reference or marker type names. |
 | `cnv_score_quantile`, `cnv_cor_cutoff` | `0.95`, `0.4` | inferCNV malignant cutoffs (see above). |
 | `infercnv_gene_order` | blank | Gene positions for inferCNV (`gene  chr  start  end`). Blank = copyKAT's built-in hg38 table. Or use `hg38_gencode_v27.txt` from https://data.broadinstitute.org/Trinity/CTAT/cnv/. A relative path (e.g. `references/hg38_gencode_v27.txt`) is looked up in the folder R runs in, then in `qc_explorer/`, then in the folder holding it (`bladder cancer`), so the same value works in the script and the app; `custom_reference` works the same way. |

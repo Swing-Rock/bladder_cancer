@@ -1,3 +1,11 @@
 datasets/
 .Rproj.user
 _*
+Claude outputs/
+# R session files
+.Rhistory
+.RData
+.Rdata
+# Slurm logs from copyKAT.sbatch (written to the folder you submit from)
+*.out
+*.err
