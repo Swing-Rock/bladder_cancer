@@ -1,9 +1,10 @@
 # QC Explorer
 
-Quality control for **scRNA-seq**, **Visium** and **Xenium** data, written for the Ongkeko Lab bladder cancer project. It has two parts:
+Quality control for **scRNA-seq**, **Visium** and **Xenium** data. It has two parts:
 
 - **The QC scripts** (`R_scripts/`): sample-sheet-driven QC, one script per data type, plus cell-type annotation. They run on their own, e.g. on Expanse.
 - **The QC app** (`app_scripts/`): a Shiny app for setting cutoffs by eye. It loads a sample or a whole dataset folder, shows the QC plots, lets you move the cutoffs with sliders, and saves the results. The app runs the scripts' own functions and has no separate copy of the QC logic, so both always give the same results.
+<img width="1920" height="1020" alt="Screenshot 2026-11-07 015227" src="https://github.com/user-attachments/assets/1f6f4dc9-2bfb-4957-9f04-84d0ce1dc6eb" />
 
 > **Work in progress.** Folders, scripts and defaults may still change. Each folder has its own README with the details.
 
