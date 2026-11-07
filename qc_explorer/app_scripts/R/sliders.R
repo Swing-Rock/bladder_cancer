@@ -74,3 +74,20 @@ restore_sliders <- function(specs, meta, th, load_n, old_cfg, old_vals, old_set)
   }
   list(cfg = cfg, set = set)
 }
+
+# Cutoffs a sample-sheet row fixes (its cutoff_<name> columns): move the sliders there, as if typed
+# into the number boxes (so they count as set by hand and keep their exact values).
+# cut: named list of values by cutoff name. Returns list(cfg with the new positions, exact).
+sheet_cutoff_sliders <- function(cfg, cut) {
+  exact <- list()
+  for (id in names(cfg)) {
+    c <- cfg[[id]]; sides <- slider_sides(c)
+    for (side in names(sides)) {
+      nm <- c[[side]]; v <- cut[[nm]]
+      if (is.null(v) || length(v) != 1 || is.na(v)) next
+      cfg[[id]]$value[sides[[side]]] <- slider_pos(c, v)
+      exact[[nm]] <- v
+    }
+  }
+  list(cfg = cfg, exact = exact)
+}

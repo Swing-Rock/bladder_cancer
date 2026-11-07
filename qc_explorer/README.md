@@ -50,9 +50,10 @@ qc_explorer/
 
 Open `run_app.R` (in the repo root) in RStudio and click **Source**. Then:
 
-- in the Load data window that opens, choose the data type and point to one sample, or to a dataset folder with one sub-folder per sample (loading filters nothing, so already-QC'd data can be looked at as it is)
+- in the Load data window that opens, choose the data type and point to one sample, to a dataset folder with one sub-folder per sample, or to a sample sheet (every row is loaded, each with its own settings). Loading filters nothing, so already-QC'd data can be looked at as it is
 - click **Apply QC**, then adjust the cutoffs with the sliders
-- choose an output folder and save
+- optionally run scDblFinder + DecontX and the annotation preview
+- choose an output folder and save. Saving writes what you have: it doesn't run any step itself
 
 See [`app_scripts/README.md`](app_scripts/README.md) for the full walkthrough: dataset batches, patient IDs, annotation and dataset-level runs.
 
@@ -67,16 +68,30 @@ Rscript R_scripts/xenium/xenium_qc.R  datasets/<ID>/samplesheet_xenium.csv
 Rscript R_scripts/annotation/annotate_cells.R datasets/<ID>/qc_output
 ```
 
-Paths in a sample sheet are relative to the sheet's own folder, so the same sheet works on everyone's machine. Each script writes to `<sample sheet folder>/qc_output/` unless you give an output folder as the second argument.
+Paths in a sample sheet are relative to the sheet's own folder, so the same sheet works on everyone's machine. Each QC script writes to `<sample sheet folder>/qc_output/` unless you give an output folder as the second argument. The annotation script writes into the QC output folder it is given.
 
-## Recording QC decisions
+## The output folder
 
-Any change to the QC parameters should be reported. Both the scripts and the app write the parameters they used:
+The scripts and the app write the same layout:
 
-- **The scripts** write `samplesheet_resolved.csv`, the final value of every parameter for every sample.
-- **The app** also writes:
-  - `qc_parameters_used.csv` and `annotation/annotation_parameters_used.csv`, which list every deviation from the defaults in plain words, including cutoffs set by hand;
-  - `app_samplesheet_rows.csv`, with sample-sheet rows that make the scripts reproduce the app's exact cutoffs.
+```
+qc_output/
+├── samplesheet.csv        one row per sample: every setting used (QC, cutoffs set by hand, annotation)
+├── summary.csv            one row per sample: cells in, removed per reason, kept, cutoffs, labels
+├── log.txt                every run and every save adds to it
+└── <dataset>/<sample>/
+    ├── <sample>.rds          the QC'd Seurat object; the annotation adds its labels to it
+    ├── <sample>_cells.csv    one row per cell, kept or not (Visium: <sample>_spots.csv)
+    ├── qc/                   QC plots
+    ├── doublets_ambient/     scDblFinder and DecontX plots (scRNA-seq, when they ran)
+    └── annotation/           annotation plots (when the sample was annotated)
+```
+
+`samplesheet.csv` is also a sample sheet. Give it to the QC script, or load it in the app as a dataset, and every sample is run again with exactly the same settings, including the cutoffs set by hand in the app (its `cutoff_*` columns) and the annotation settings (its `annot_*` columns). Run on an output folder's own `samplesheet.csv`, a script writes its results back into that folder.
+
+Any change to the QC parameters should be reported: `samplesheet.csv` holds every value used, and `log.txt` lists each sample's changes from the defaults in plain words.
+
+Running QC on a sample again (script or app) replaces its folder, and its earlier annotation goes with it, because that annotation was made on the old cells. `working_files/` (copyKAT and inferCNV) only speeds up reruns and can be deleted.
 
 ## Documentation
 
@@ -87,6 +102,7 @@ Any change to the QC parameters should be reported. Both the scripts and the app
 | [`R_scripts/visium/README.md`](R_scripts/visium/README.md) | Visium QC and deconvolution |
 | [`R_scripts/xenium/README.md`](R_scripts/xenium/README.md) | Xenium QC and its default filters |
 | [`R_scripts/annotation/README.md`](R_scripts/annotation/README.md) | Annotation references, settings and the malignant-cell calls |
+| [`DATASETS.md`](DATASETS.md) | GEO datasets packaged unusually (GSE149652, GSE171351, GSE246011) and how to load them |
 
 ## Requirements
 

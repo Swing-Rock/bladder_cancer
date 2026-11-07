@@ -5,8 +5,8 @@ Two scripts for 10x Visium spatial transcriptomics, run in this order:
 | Script | What it does | Input | Output |
 | --- | --- | --- | --- |
 | `h5ad_to_spaceranger.py` (only if needed) | Splits a combined Scanpy `.h5ad` into one Space-Ranger-style folder per section | A Visium `.h5ad` with images in `uns["spatial"]` | Per-section folders + a sample sheet for `visium_qc.R` |
-| `visium_qc.R` | Removes low-quality spots with per-sample MAD cutoffs (same method as [`../scRNA/scrna_qc.R`](../scRNA/README.md)) and maps where the removed spots are | A sample sheet listing Space Ranger folders (any layout) or Seurat `.rds` files | One `<sample>_qc.rds` per sample (raw counts + tissue image), tables, plots |
-| `visium_deconvolution.R` | Estimates the cell-type proportions in every spot with RCTD | The `*_qc.rds` files, plus an **annotated single-cell Seurat object** as the reference | `<sample>_deconv.rds`, per-spot proportion tables, spatial maps |
+| `visium_qc.R` | Removes low-quality spots with per-sample MAD cutoffs (same method as [`../scRNA/scrna_qc.R`](../scRNA/README.md)) and maps where the removed spots are | A sample sheet listing Space Ranger folders (any layout) or Seurat `.rds` files | One folder per sample: `<sample>.rds` (raw counts + tissue image), per-spot table, plots; `samplesheet.csv`, `summary.csv` |
+| `visium_deconvolution.R` | Estimates the cell-type proportions in every spot with RCTD | The QC output folder, plus an **annotated single-cell Seurat object** as the reference | RCTD proportions added to each `<sample>.rds` and `<sample>_spots.csv`, spatial maps in `<sample>/deconvolution/` |
 
 Human data only (mitochondrial genes are matched with `^MT-`).
 
@@ -28,26 +28,26 @@ slide1_B1,MY_VISIUM,data/slide1_B1/outs
 
 ```bash
 Rscript R_scripts/visium/visium_qc.R datasets/<ID>/samplesheet_visium.csv
-# -> datasets/<ID>/qc_output/<dataset>/<sample>_qc.rds, tables, plots/
+# -> datasets/<ID>/qc_output/<dataset>/<sample>/<sample>.rds, <sample>_spots.csv, qc/; samplesheet.csv, summary.csv
 ```
 
 **3. Run deconvolution**, once you have an annotated scRNA-seq reference:
 
 ```bash
 Rscript R_scripts/visium/visium_deconvolution.R \
-  datasets/<ID>/qc_output/<dataset> \
+  datasets/<ID>/qc_output \
   datasets/<reference>/reference_annotated.rds \
   celltype
-# -> datasets/<ID>/qc_output/<dataset>/deconvolution/
+# -> RCTD columns in each <sample>.rds and <sample>_spots.csv, maps in <dataset>/<sample>/deconvolution/
 ```
 
-The three arguments are: the folder of `*_qc.rds` files, the reference `.rds`, and the name of the reference's cell-type metadata column. In RStudio, set the same three values at the top of the script and click **Source**.
+The three arguments are: the QC output folder (every `<dataset>/<sample>/<sample>.rds` in it), the reference `.rds`, and the name of the reference's cell-type metadata column. In RStudio, set the same three values at the top of the script and click **Source**.
 
 **4. Check the results.** Outputs go to `datasets/<ID>/qc_output/`, which is git-ignored along with all data. After each run:
 
-1. Open `all_samples_summary.csv`: spots kept per section, and why the others were removed.
-2. Look at `plots/03_spatial_removed_spots.png` for every section, to confirm that no real tissue region was cut out (see [How the QC works](#how-the-qc-works)).
-3. After deconvolution, read `deconvolution_log.txt` (reference cell types, genes shared, skipped spots) and check that the proportion maps make anatomical sense.
+1. Open `summary.csv`: spots kept per section, why the others were removed, and the cutoffs used.
+2. Look at `qc/03_spatial_removed_spots.png` for every section, to confirm that no real tissue region was cut out (see [How the QC works](#how-the-qc-works)).
+3. After deconvolution, read `log.txt` (reference cell types, genes shared, skipped spots) and check that the proportion maps make anatomical sense.
 4. Note anything unusual about the dataset in the root README's dataset table.
 
 ### Example: GSE171351
@@ -65,7 +65,7 @@ Rscript R_scripts/visium/visium_qc.R datasets/GSE171351/samplesheet_visium.csv
 
 # 3. deconvolution, once the annotated bladder reference exists
 Rscript R_scripts/visium/visium_deconvolution.R \
-        datasets/GSE171351/qc_output/GSE171351 <reference.rds> celltype
+        datasets/GSE171351/qc_output <reference.rds> celltype
 ```
 
 ---
@@ -100,6 +100,8 @@ Set `format` to `spaceranger` for a folder or `rds` for a Seurat object, or leav
 
 ### Combined `.h5ad` files (Scanpy/AnnData)
 
+> The QC app does this split by itself: pick the combined `.h5ad` (data type Visium) and it writes one folder per section next to the file, plus `<file>_sections.csv`, then loads the sections. The script below gives the same folders without the app.
+
 Some GEO series ship all sections in one AnnData file instead of Space Ranger folders, e.g. GSE171351's `GSE171351_combined_visium.h5ad`. Split it into one Space-Ranger-style folder per section with `h5ad_to_spaceranger.py`, then run `visium_qc.R` on the sample sheet it writes:
 
 ```bash
@@ -119,7 +121,7 @@ The converter:
 - **Barcodes:** strips the suffixes Scanpy adds when concatenating (`AAAC...-1-0-0-0` → `AAAC...-1`).
 - **Spatial files:** writes positions from `obsm["spatial"]` (Scanpy convention: column 0 = image x, column 1 = image y), the scale factors, and the low- and high-res images.
 
-Check the result once by eye: open `plots/03_spatial_removed_spots.png` and a `SpatialFeaturePlot` of one section, and confirm the spots sit on the tissue.
+Check the result once by eye: open `qc/03_spatial_removed_spots.png` and a `SpatialFeaturePlot` of one section, and confirm the spots sit on the tissue.
 
 Files are found by name pattern anywhere inside the sample folder, so extra files don't matter. If a folder has both `filtered_` and `raw_` matrices, the filtered one is used. Each sample needs its own folder.
 
@@ -135,7 +137,7 @@ Files are found by name pattern anywhere inside the sample folder, so extra file
    - UMIs and genes: more than `nmads_low` (3) MADs below or `nmads_high` (5) MADs above the median, on a log10 scale
    - % mito: more than `nmads_mito` (3) MADs above the median, clamped to `mito_floor`–`mito_ceiling` (10–25%)
    - hard floors: at least `min_counts` (250) UMIs and `min_features` (200) genes per spot
-4. **Drop rare genes** (seen in fewer than `min_spots_gene` = 3 kept spots) and save `<sample>_qc.rds` with **raw counts**.
+4. **Drop rare genes** (seen in fewer than `min_spots_gene` = 3 kept spots) and save `<sample>.rds` with **raw counts**.
 
 **Different from scRNA-seq QC, on purpose:**
 
@@ -143,7 +145,7 @@ Files are found by name pattern anywhere inside the sample folder, so extra file
 - **No normalization.** RCTD needs raw counts. Normalize (e.g. `SCTransform(obj, assay = "Spatial")`) in your downstream analysis.
 - **The floors are lower** (250 UMIs, 200 genes) because a spot's counts depend on the tissue under it. These match the lower cutoffs of the earlier fixed-threshold Visium QC.
 
-**Check where the removed spots are.** In tissue, low counts aren't always bad quality: stroma, necrotic or fibrotic areas, and the tissue edge capture less RNA. A real region could be flagged just for being a minority of the slide. `plots/03_spatial_removed_spots.png` shows this:
+**Check where the removed spots are.** In tissue, low counts aren't always bad quality: stroma, necrotic or fibrotic areas, and the tissue edge capture less RNA. A real region could be flagged just for being a minority of the slide. `qc/03_spatial_removed_spots.png` shows this:
 
 - **Scattered** removed spots, or ones at a torn edge, are what you expect.
 - A **solid block** of removed spots matching a histological region means the cutoff is cutting out real tissue. Loosen `nmads_low` for that sample and rerun.
@@ -179,28 +181,24 @@ The reference can be any annotated single-cell Seurat object. It sets what RCTD 
 
 ```
 datasets/<ID>/qc_output/
-├── all_samples_summary.csv          every sample: spots in/kept, removed by reason, status
-├── samplesheet_resolved.csv         final value of every parameter per sample
-├── qc_log.txt
-└── <dataset>/
-    ├── <sample>_qc.rds              kept spots, raw counts, tissue image, positions in metadata
-    ├── qc_thresholds.csv            cutoffs actually used, per sample
-    ├── spot_qc_metadata.csv         every in-tissue spot: metrics, position, qc_reason
-    ├── plots/
+├── samplesheet.csv                  every sample with every setting used; reusable as the input sheet
+├── summary.csv                      every sample: spots in/kept, removed by reason, cutoffs, status (+ RCTD mean proportions)
+├── log.txt                          each run adds to it (QC and deconvolution)
+└── <dataset>/<sample>/
+    ├── <sample>.rds                 kept spots, raw counts, tissue image, positions in metadata (+ RCTD columns)
+    ├── <sample>_spots.csv           every in-tissue spot: metrics, position, qc_reason (+ RCTD proportions)
+    ├── qc/
     │   ├── 01_violin_before_after.png
     │   ├── 02_counts_vs_genes_by_reason.png
     │   ├── 03_spatial_removed_spots.png    where removed spots are on the tissue
     │   ├── 04_spatial_umis.png             UMIs across the tissue
     │   └── 05_spatial_mito.png             % mito across the tissue
-    └── deconvolution/                       written by visium_deconvolution.R
-        ├── <sample>_deconv.rds              QC'd object + RCTD_<type>, RCTD_dominant, RCTD_max_proportion
-        ├── <sample>_proportions.csv         one row per spot
-        ├── <sample>_dominant_cell_type.png
-        ├── <sample>_proportions.png         one map per cell type
-        ├── reference_cell_types.csv         cell types and cell counts actually used
-        ├── deconvolution_summary.csv        mean proportion of each type per sample
-        └── deconvolution_log.txt
+    └── deconvolution/               written by visium_deconvolution.R
+        ├── dominant_cell_type.png
+        └── proportions.png          one map per cell type
 ```
+
+The deconvolution adds `RCTD_<type>`, `RCTD_dominant` and `RCTD_max_proportion` to the spots' metadata in `<sample>.rds` and to `<sample>_spots.csv`, and each sample's mean proportions to `summary.csv`. The reference's cell types and the cells used per type are in `log.txt`. Rerunning QC on a sample removes its deconvolution (the spots may have changed); run the deconvolution again afterwards.
 
 `RCTD_max_proportion` is how much the dominant type accounts for. Spots where it's low are true mixtures, so `RCTD_dominant` means little for them. RCTD also applies its own minimum-UMI cutoff per spot (100 UMIs by default in the GitHub version); any spot it skips gets `NA` proportions and is logged.
 

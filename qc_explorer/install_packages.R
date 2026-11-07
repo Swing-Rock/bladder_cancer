@@ -2,7 +2,8 @@
 # (The QC scripts' own packages are listed in R_scripts/*/README.md;
 #  this installs those too, so a fresh machine can run both.)
 cran <- c("shiny", "bslib", "shinyFiles", "Seurat", "Matrix", "ggplot2", "patchwork", "data.table", "hdf5r",
-          "pheatmap", "viridis", "scales", "remotes", "callr")
+          "pheatmap", "viridis", "scales", "remotes", "callr",
+          "png", "tiff", "jpeg")   # last row: tissue images (GEO Visium .tif files)
 bioc <- c("SingleCellExperiment", "scDblFinder", "celda", "DropletUtils",
           "SingleR", "celldex", "scran", "BiocParallel", "SummarizedExperiment")   # last row: annotation
 optional <- c("arrow")   # only for Xenium folders that have cells.parquet but no cells.csv.gz

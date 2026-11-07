@@ -158,3 +158,155 @@ h5ad_xenium <- function(p) {
   if (!length(ctrl)) message(sprintf("[%s] no negative-control counts in the .h5ad; %% control will be 0", p$sample_id))
   list(counts = m, info = info, obj = NULL, obs_cols = h$obs_cols)
 }
+
+## ---- combined Visium .h5ad: several sections in one file (e.g. GSE171351) --------------------
+# Some GEO series ship every Visium section in one AnnData file. The app splits such a file into
+# one Space-Ranger-style folder per section, written next to the file, then loads the sections as
+# a dataset. Each section keeps its tissue image and scale factors, and visium_qc.R can read the
+# folders too. Same output as R_scripts/visium/h5ad_to_spaceranger.py, without needing Python.
+# The list of sections goes in <file>_sections.csv (a sample sheet); while it exists, dataset
+# folders skip the combined file itself (see find_samples()).
+
+# Does an hdf5r file/group hold this path (e.g. "uns/spatial")?
+h5_has <- function(node, p) {
+  for (k in strsplit(p, "/", fixed = TRUE)[[1]]) { if (!node$exists(k)) return(FALSE); node <- node[[k]] }
+  TRUE
+}
+
+# The libraries (sections) in uns['spatial'] of an .h5ad, or character(0)
+h5ad_visium_libraries <- function(path) {
+  if (!length(path) || !grepl("\\.h5ad$", path, ignore.case = TRUE) || !file.exists(path) ||
+      !requireNamespace("hdf5r", quietly = TRUE)) return(character(0))
+  tryCatch({
+    f <- hdf5r::H5File$new(path, mode = "r"); on.exit(f$close_all(), add = TRUE)
+    if (h5_has(f, "uns/spatial")) names(f[["uns/spatial"]]) else character(0)
+  }, error = function(e) character(0))
+}
+is_combined_visium_h5ad <- function(path) length(h5ad_visium_libraries(path)) > 1
+
+# An image stored in uns['spatial'][lib]['images'] as a [0, 1] array (height x width x 3) for png
+h5ad_image <- function(ds) {
+  a <- ds$read()
+  d <- dim(a)
+  if (length(d) == 3 && d[1] %in% 3:4 && !d[3] %in% 3:4) a <- aperm(a, c(3, 2, 1))   # hdf5r reverses the dimensions
+  else if (length(d) == 2) a <- t(a)
+  a <- array(as.numeric(a), dim = dim(a))
+  if (max(a, na.rm = TRUE) > 1) a <- a / 255
+  if (length(dim(a)) == 3 && dim(a)[3] == 4) a <- a[, , 1:3]
+  a[is.na(a)] <- 0
+  pmin(pmax(a, 0), 1)
+}
+
+# Split a combined Visium .h5ad. Returns list(sheet = the <file>_sections.csv sample sheet,
+# samples = its rows, dataset, reused = TRUE if an earlier split was reused, log = lines for the log).
+# progress(k, n, name) is called before each section.
+split_visium_h5ad <- function(path, progress = function(k, n, name) NULL) {
+  path <- normalizePath(path, winslash = "/")
+  dir <- dirname(path); sheet <- split_manifest(path)
+  dataset <- sanitize_id(sub("(_combined.*)?\\.h5ad$", "", basename(path), ignore.case = TRUE))
+
+  # Split before (and the file hasn't changed since): reuse the folders
+  if (file.exists(sheet) && file.mtime(sheet) >= file.mtime(path)) {
+    old <- tryCatch(read.csv(sheet, colClasses = "character"), error = function(e) NULL)
+    if (!is.null(old) && nrow(old) && all(file.exists(file.path(dir, old$path, "spatial", "tissue_positions_list.csv"))))
+      return(list(sheet = sheet, samples = old, dataset = old$dataset[1], reused = TRUE,
+                  log = sprintf("[%s] already split into %d sections (%s); reusing them", basename(path), nrow(old), sheet)))
+  }
+  for (pk in c("hdf5r", "DropletUtils", "png"))
+    if (!requireNamespace(pk, quietly = TRUE)) stop("splitting a combined .h5ad needs the ", pk, " package")
+
+  f <- hdf5r::H5File$new(path, mode = "r"); on.exit(f$close_all(), add = TRUE)
+  libs <- if (h5_has(f, "uns/spatial")) names(f[["uns/spatial"]]) else character(0)
+  if (length(libs) < 2) stop(basename(path), " holds ", length(libs), " section(s) in uns['spatial']; nothing to split")
+  if (!h5_has(f, "obsm/spatial")) stop(basename(path), " has no obsm['spatial'] (spot coordinates)")
+
+  # Raw counts: the first of layers/counts, raw/X, X that holds whole numbers
+  m <- NULL
+  for (cd in list(c("layers/counts", "var"), c("raw/X", "raw/var"), c("X", "var"))) {
+    if (!h5_has(f, cd[1]) || !h5_has(f, cd[2])) next
+    x <- h5ad_matrix(f[[cd[1]]])
+    xs <- head(x@x, 2e6)
+    if (!length(xs) || (all(xs == round(xs)) && min(xs) >= 0)) { m <- x; src <- cd[1]; var <- f[[cd[2]]]; break }
+  }
+  if (is.null(m)) stop("no raw counts in ", basename(path), ": layers['counts'], .raw and X all hold non-whole numbers (normalized data). QC needs raw counts.")
+  obs <- f[["obs"]]
+  cells <- h5ad_index(obs)
+  if (ncol(m) != length(cells) && nrow(m) == length(cells)) m <- Matrix::t(m)
+  if (ncol(m) != length(cells)) stop("the count matrix has ", ncol(m), " columns but obs has ", length(cells), " spots")
+  gene_ids <- h5ad_gene_names(var, 1)   # Ensembl IDs if the file has them, else the index
+  symbols  <- h5ad_gene_names(var, 2)   # gene symbols if the file has them, else the index
+
+  # Which obs column says which section each spot belongs to: values = the uns['spatial'] keys
+  ocols <- h5ad_columns(obs)
+  read_col <- function(cl) tryCatch(h5ad_column(obs, cl), error = function(e) NULL)
+  lib_col <- NA_character_; lib_of <- NULL
+  for (cl in ocols) {
+    v <- read_col(cl)
+    if (is.null(v) || length(v) != length(cells)) next
+    v <- as.character(v)
+    if (!anyNA(v) && all(unique(v) %in% libs)) { lib_col <- cl; lib_of <- v; break }
+  }
+  if (is.null(lib_of)) stop("can't tell which obs column assigns spots to the sections (", paste(libs, collapse = ", "),
+                            "). Split the file with R_scripts/visium/h5ad_to_spaceranger.py --sample-col <column> instead.")
+
+  # Name each section after a patient/sample column when it has one value per section (as --name-col)
+  name_col <- NA_character_; name_of <- NULL
+  for (cl in intersect(c("Patient", "patient", "patient_id", "Patient_ID", "donor", "donor_id", "sample", "sample_id", "Sample"), ocols)) {
+    v <- read_col(cl)
+    if (is.null(v) || length(v) != length(cells)) next
+    v <- as.character(v)
+    if (all(tapply(v, lib_of, function(z) length(unique(z))) == 1)) { name_col <- cl; name_of <- v; break }
+  }
+
+  to_int <- function(cl, default) {
+    v <- if (cl %in% ocols) read_col(cl)
+    if (is.null(v) || length(v) != length(cells)) return(rep(as.integer(default), length(cells)))
+    if (is.logical(v)) return(as.integer(v))
+    x <- suppressWarnings(as.integer(round(as.numeric(v))))
+    tf <- toupper(as.character(v)) %in% c("TRUE", "FALSE")
+    x[tf] <- as.integer(toupper(as.character(v[tf])) == "TRUE")
+    x[is.na(x)] <- as.integer(default)
+    x
+  }
+  in_tissue <- to_int("in_tissue", 1); arow <- to_int("array_row", 0); acol <- to_int("array_col", 0)
+  xy <- f[["obsm/spatial"]][, ]
+  if (nrow(xy) != length(cells) && ncol(xy) == length(cells)) xy <- t(xy)   # column 1 = x (image column), 2 = y (image row)
+
+  log <- sprintf("[%s] combined Visium .h5ad: %d sections (obs['%s']), counts from %s, %d genes x %d spots%s",
+                 basename(path), length(libs), lib_col, src, nrow(m), ncol(m),
+                 if (!is.na(name_col)) sprintf("; sections named <%s>_<library>", name_col) else "")
+  rows <- list(); used <- character(0)
+  for (k in seq_along(libs)) {
+    lib <- libs[k]; sel <- which(lib_of == lib)
+    if (!length(sel)) { log <- c(log, sprintf("  %s: no spots, skipped", lib)); next }
+    name <- sanitize_id(if (!is.na(name_col)) paste0(name_of[sel[1]], "_", lib) else lib)
+    name <- make.unique(c(used, name))[length(used) + 1]; used <- c(used, name)
+    progress(k, length(libs), name)
+    sec <- file.path(dir, name); mdir <- file.path(sec, "filtered_feature_bc_matrix"); sdir <- file.path(sec, "spatial")
+    # barcodes: drop the suffixes added when the sections were concatenated (AAAC...-1-0-0 -> AAAC...-1)
+    bcs <- sub("^([ACGTN]+-[0-9]+)(-[0-9]+)+$", "\\1", cells[sel])
+    if (anyDuplicated(bcs)) bcs <- cells[sel]
+    dir.create(sec, recursive = TRUE, showWarnings = FALSE)   # write10xCounts writes via a temporary folder inside it
+    DropletUtils::write10xCounts(mdir, m[, sel, drop = FALSE], barcodes = bcs, gene.id = gene_ids, gene.symbol = symbols,
+                                 gene.type = "Gene Expression", version = "3", overwrite = TRUE)
+    dir.create(sdir, recursive = TRUE, showWarnings = FALSE)
+    # Space Ranger v1 positions (no header): barcode, in_tissue, array_row, array_col, pxl_row, pxl_col
+    pos <- data.frame(bcs, in_tissue[sel], arow[sel], acol[sel], as.integer(round(xy[sel, 2])), as.integer(round(xy[sel, 1])))
+    write.table(pos, file.path(sdir, "tissue_positions_list.csv"), sep = ",", row.names = FALSE, col.names = FALSE, quote = FALSE)
+    lg <- f[["uns/spatial"]][[lib]]
+    sf <- if (lg$exists("scalefactors")) { g <- lg[["scalefactors"]]; vapply(names(g), function(nm) as.numeric(g[[nm]]$read())[1], 0) } else numeric(0)
+    if (!any(c("tissue_lowres_scalef", "tissue_hires_scalef") %in% names(sf)))
+      stop("section ", lib, " has no tissue_lowres_scalef / tissue_hires_scalef in uns['spatial']['", lib, "']['scalefactors']")
+    writeLines(c("{", paste(sprintf('  "%s": %.15g', names(sf), sf), collapse = ",\n"), "}"), file.path(sdir, "scalefactors_json.json"))
+    kinds <- if (lg$exists("images")) intersect(c("lowres", "hires"), names(lg[["images"]])) else character(0)
+    if (!length(kinds)) stop("section ", lib, " has no images in uns['spatial']['", lib, "']['images']")
+    for (kind in kinds) png::writePNG(h5ad_image(lg[["images"]][[kind]]), file.path(sdir, sprintf("tissue_%s_image.png", kind)))
+    rows[[length(rows) + 1]] <- data.frame(sample_id = name, dataset = dataset, path = name,
+                                           notes = sprintf("from %s, library %s", basename(path), lib), stringsAsFactors = FALSE)
+    log <- c(log, sprintf("  %s -> %s: %d spots, images: %s", lib, sec, length(sel), paste(kinds, collapse = ", ")))
+  }
+  samples <- do.call(rbind, rows)
+  write.csv(samples, sheet, row.names = FALSE)
+  log <- c(log, sprintf("  sample sheet: %s", sheet))
+  list(sheet = sheet, samples = samples, dataset = dataset, reused = FALSE, log = log)
+}

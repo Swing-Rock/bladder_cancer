@@ -23,20 +23,15 @@
 ```bash
 # from the repo root (where "bladder cancer.Rproj" is)
 Rscript R_scripts/annotation/annotate_cells.R datasets/GSE130001/qc_output
-# -> datasets/GSE130001/qc_output/annotation/<dataset>/<sample>_annotated.rds, tables, plots/
+# -> the labels go into each qc_output/<dataset>/<sample>/<sample>.rds and <sample>_cells.csv,
+#    plots into <sample>/annotation/, the settings into samplesheet.csv, the labels into summary.csv
 ```
 
 In RStudio, set `INPUT` (and `PARAMS` if needed) at the top of the script and click **Source**.
 
-To collect QC'd samples from several people, pass a `.csv` instead of a folder:
+The input is a QC output folder (from the QC scripts or the app), or its `samplesheet.csv`. Every sample in that sheet is annotated; without a `samplesheet.csv`, every `<dataset>/<sample>/<sample>.rds` in the folder. The sheet's `patient` column is added to every cell.
 
-```csv
-path,sample_id,dataset,patient_id
-alice/qc_output/GSE1/P1_qc.rds,P1,GSE1,PT01
-bob/qc_output/GSE2/S7_qc.rds,S7,GSE2,PT01
-```
-
-`patient_id` is added to every cell as `patient`. Relative paths are relative to the `.csv`.
+**Per-sample settings.** `PARAMS` applies to every sample. To change a setting for one sample, give its row in `samplesheet.csv` an `annot_<setting>` column, e.g. `annot_malignant_method = none` or `annot_references = HPCA;Monaco` (several values separated by `;`, `none` for an empty list). Blank cells use `PARAMS`. After a run, the sheet's `annot_*` columns hold every setting each sample was annotated with, so rerunning the script on the same folder reproduces it.
 
 ---
 
@@ -60,7 +55,7 @@ The script checks for every package the chosen settings need before it starts, a
 
 ## Input
 
-The script takes Seurat objects with **raw counts**, one per sample: the `<sample>_qc.rds` files from the QC scripts or the app. It finds the right assay itself (`RNA`, `Spatial` or `Xenium`). Set `assay = "decontX"` to annotate scRNA-seq on the ambient-corrected counts instead.
+The script takes Seurat objects with **raw counts**, one per sample: the `<dataset>/<sample>/<sample>.rds` files of a QC output folder (from the QC scripts or the app). It finds the right assay itself (`RNA`, `Spatial` or `Xenium`). Set `assay = "decontX"` to annotate scRNA-seq on the ambient-corrected counts instead.
 
 ---
 
@@ -136,17 +131,18 @@ Both tools run per sample, because each patient's tumour has its own CNV profile
 
 ## Outputs
 
+Everything goes into the QC output folder, next to the QC results:
+
 ```
-<out_dir>/                           default: <input folder>/annotation
-├── annotation_params.csv            every parameter: value, default, and whether it deviates
-├── annotation_log.txt
-├── label_counts.csv                 cells per label, per sample
-└── <dataset>/
-    ├── <sample>_annotated.rds       the QC'd object + labels (+ cnv_status, patient); raw counts untouched
-    ├── cell_labels.csv              every cell's labels (final, SingleR, markers), scores and CNV calls
-    ├── label_composition.png        label proportions per sample
-    ├── cnv/                         working files, plus each method's cached result (cnv_<sample>/<method>/result_cache.rds)
-    └── plots/<sample>/
+<qc output folder>/
+├── samplesheet.csv              annot_* columns: every setting each sample was annotated with
+├── summary.csv                  annotated_at, cell_labels (the commonest final labels), malignant (cnv_status counts)
+├── log.txt                      every run adds to it: settings that differ from PARAMS, references, labels
+├── working_files/<dataset>/<sample>/   copyKAT / inferCNV working files and cached results (safe to delete)
+└── <dataset>/<sample>/
+    ├── <sample>.rds             the QC'd object, now with the labels (+ cnv_status, patient); raw counts untouched
+    ├── <sample>_cells.csv       the label columns added: final label, SingleR, markers, scores, CNV calls
+    └── annotation/
         ├── 01_score_heatmap_<ref>.png   each cell vs every label; a clean call = one bright row
         ├── 02_delta_<ref>.png           how far each winning label is ahead; low = pruned
         ├── 03_umap_labels.png           clusters, final label, lineage, agreement, each method's per-cell and cluster labels
@@ -155,9 +151,9 @@ Both tools run per sample, because each patient's tumour has its own CNV profile
         └── 06_marker_dotplot.png        marker genes by final label (when markers run)
 ```
 
-`<sample>_annotated.rds` also keeps the raw SingleR results and what the labels were computed from, in `obj@misc$annotation` (used to reuse the labels; see below).
+`<sample>.rds` also keeps the raw SingleR results, the settings and what the labels were computed from, in `obj@misc$annotation` (used to reuse the labels; see below). The scaled data made for clustering is not saved (it is large; `NormalizeData` / `ScaleData` again if you need it).
 
-When the app does the annotation, it writes the same files under `<qc output folder>/annotation/`. It adds `annotation_parameters_used.csv`: one row per sample, listing every parameter and each deviation from the defaults in plain words.
+Running QC on a sample again (script or app) replaces its object, so its annotation goes with it: annotate it again afterwards. The app saves an annotation with the same function, `write_annotation_outputs()`, when you save a sample you annotated in it.
 
 ---
 
@@ -165,8 +161,8 @@ When the app does the annotation, it writes the same files under `<qc output fol
 
 The malignant-cell step (copyKAT especially) is the slow part, so the script protects the work before it:
 
-1. **Labels are saved first.** Right after SingleR and clustering, `<sample>_annotated.rds` is written with the labels (and `obj@misc$annotation$stage = "labels saved"`). If the run is then interrupted (Ctrl+C, a closed window, a killed job), the labels are still there. The file is rewritten with the malignant calls when the step finishes (`stage = "complete"`).
-2. **Rerunning picks up where it stopped** (`reuse_previous = TRUE`, the default). The script reuses the labels in an existing `<sample>_annotated.rds` when they were made from the same cells, counts and label settings. It reuses a method's cached result in `cnv/` when the cells, reference cells and that method's settings are the same. The log says what it reused. Change anything those depend on and that part is computed again.
+1. **Labels are saved first.** Right after SingleR and clustering, `<sample>.rds` is written with the labels (and `obj@misc$annotation$stage = "labels saved"`). If the run is then interrupted (Ctrl+C, a closed window, a killed job), the labels are still there. The file is rewritten with the malignant calls when the step finishes (`stage = "complete"`).
+2. **Rerunning picks up where it stopped** (`reuse_previous = TRUE`, the default). The script reuses the labels already in `<sample>.rds` when they were made from the same cells, counts and label settings. It reuses a method's cached result in `working_files/` when the cells, reference cells and that method's settings are the same. The log says what it reused. Change anything those depend on and that part is computed again.
 3. **Switching methods is cheap.** Running with `malignant_method = "none"` first gives the labels in minutes; a later run with `copykat` reuses them and only runs copyKAT. Switching back to a method that already ran reuses its result.
 
 Set `reuse_previous = FALSE` to compute everything again. In the app, the same reuse works within a session: previews keep their labels and method results in the app's temporary folder, so changing only the malignant-cell settings doesn't rerun SingleR.
@@ -184,13 +180,13 @@ A convenient split:
 1. **Locally:** run with `malignant_method = "none"` (or pick *none* in the app) to get the SingleR labels and clusters in a few minutes.
 2. **On Expanse:** run with `malignant_method = "copykat"` using the sbatch script.
 
-Because labels are reused when nothing they depend on has changed (see [above](#interrupted-runs-and-reruns)), copying the `annotation/` folder along with the QC'd data lets the Expanse run skip SingleR and go straight to copyKAT.
+Because labels are reused when nothing they depend on has changed (see [above](#interrupted-runs-and-reruns)), copying the QC output folder (with the labelled `<sample>.rds` files) lets the Expanse run skip SingleR and go straight to copyKAT. For one sample only, set `annot_malignant_method = copykat` on its row in `samplesheet.csv`.
 
 ---
 
 ## Settings
 
-All settings are in `PARAMS` at the top of the script; the app shows the same ones.
+All settings are in `PARAMS` at the top of the script; the app shows the same ones. Any of them can be set for one sample with an `annot_<setting>` column in `samplesheet.csv` (see [Quick start](#quick-start)).
 
 | Setting | Default | Meaning |
 | --- | --- | --- |

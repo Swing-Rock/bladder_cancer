@@ -1,15 +1,9 @@
 # annotation.R — runs the annotation script (R_scripts/annotation/annotate_cells.R)
 # on QC'd samples from inside the app. As with QC, the logic lives in the script; this file
-# only turns the app's inputs into the script's PARAMS and writes the outputs.
-#
-# Outputs (same layout the script uses when pointed at qc_output/):
-#   <out_dir>/annotation/
-#   ├── annotation_parameters_used.csv    one row per sample: every parameter + deviations from the script's PARAMS
-#   ├── annotation_log.txt
-#   └── <dataset>/
-#       ├── <sample>_annotated.rds        QC'd object + SingleR labels (+ cnv_status, patient)
-#       ├── <sample>_cell_labels.csv
-#       └── plots/<sample>/
+# only turns the app's inputs into the script's PARAMS and draws the Annotation tab.
+# Saving a sample writes its annotation with the script's own write_annotation_outputs()
+# (labels into <sample>.rds and <sample>_cells.csv, plots into annotation/, settings into
+# samplesheet.csv as annot_* columns), the same as the script does.
 
 ANNOT_CHOICES <- list(label_level = c("main", "fine"), label_priority = c("SingleR", "markers"), marker_list_mode = c("add", "replace"))
 
@@ -173,53 +167,6 @@ annotate_saved_sample <- function(env, rds_path, sample_id, dataset, sample_meta
   for (nm in setdiff(names(sample_meta), "patient")) r$obj@meta.data[[nm]] <- sample_meta[[nm]]
   r$refs <- refs
   r
-}
-
-annotation_params_row <- function(env, params, refs, sample_id, dataset, sample_meta, type) {
-  used <- env$parameters_used(params, refs)
-  base <- used[!grepl("^(reference_|SingleR_version|Seurat_version)", used$parameter), ]
-  row <- data.frame(sample_id = sample_id, dataset = dataset, patient = sample_meta$patient %||% NA_character_,
-                    data_type = type, stringsAsFactors = FALSE)
-  for (i in seq_len(nrow(base))) row[[base$parameter[i]]] <- base$value[i]
-  extra <- used[grepl("^(reference_|SingleR_version|Seurat_version)", used$parameter), ]
-  for (i in seq_len(nrow(extra))) row[[extra$parameter[i]]] <- extra$value[i]
-  dev <- base[base$deviates, ]
-  row$n_deviations_from_default <- nrow(dev)
-  row$deviations_from_default <- if (nrow(dev)) paste(sprintf("%s: default %s -> %s", dev$parameter, dev$default, dev$value), collapse = "; ")
-                                 else "none (all script defaults)"
-  row$annotation_script <- env$.script_path
-  row$saved_at <- format(Sys.time(), "%Y-%m-%d %H:%M:%S")
-  row
-}
-
-# Put the sample's dataset and patient/sample info on an annotation result, then write it.
-# Used by the app when saving, and by a background job that annotates for saving.
-save_annotated_sample <- function(env, r, params, out_dir, sample_meta, dataset) {
-  r$dataset <- dataset; r$obj$dataset <- dataset
-  for (nm in names(sample_meta)) if (!is.na(sample_meta[[nm]])) r$obj@meta.data[[nm]] <- sample_meta[[nm]]
-  save_annotation(env, r, params, out_dir, sample_meta)
-}
-
-# Write one annotated sample. Returns list(files, deviations, summary)
-save_annotation <- function(env, r, params, out_dir, sample_meta) {
-  ann_dir <- file.path(out_dir, "annotation")
-  ds_dir <- file.path(ann_dir, r$dataset)
-  dir.create(ds_dir, recursive = TRUE, showWarnings = FALSE)
-  env$.an_log$file <- file.path(normalizePath(ann_dir, winslash = "/"), "annotation_log.txt")
-  on.exit(env$.an_log$file <- NULL, add = TRUE)
-  f <- file.path(ds_dir, paste0(r$sample_id, "_annotated.rds"))
-  saveRDS(r$obj, f)
-  env$log_msg("[%s] QC app: saved %s", r$sample_id, f)
-  lab <- r$obj[[]][, env$label_columns(r$obj), drop = FALSE]
-  lab_file <- file.path(ds_dir, paste0(r$sample_id, "_cell_labels.csv"))
-  write.csv(cbind(cell = rownames(lab), lab), lab_file, row.names = FALSE)
-  plot_dir <- file.path(ds_dir, "plots", r$sample_id)
-  tryCatch(env$make_sample_plots(r, plot_dir),
-           error = function(e) env$log_msg("[%s] WARNING: plotting failed (%s)", r$sample_id, conditionMessage(e)))
-  prow <- annotation_params_row(env, params, r$refs, r$sample_id, r$dataset, sample_meta, r$type)
-  upsert_csv(file.path(ann_dir, "annotation_parameters_used.csv"), prow, "sample_id")
-  list(files = c(f, lab_file, file.path(ann_dir, "annotation_parameters_used.csv"), list.files(plot_dir, full.names = TRUE)),
-       deviations = prow$deviations_from_default, summary = annotation_summary(r$obj))
 }
 
 # Short text summary for the app

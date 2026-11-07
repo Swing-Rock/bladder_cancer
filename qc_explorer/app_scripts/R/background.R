@@ -33,20 +33,13 @@ bg_extra_fun <- function(app_dir, qc_script, in_rds, out_rds, setup) {
   TRUE
 }
 
-# save_dir: when the annotation is for saving, the output folder. The child process then writes
-# the annotation outputs itself, so they are saved even if the page disconnects meanwhile.
 bg_annot_fun <- function(app_dir, annot_script, qc_rds, sample_id, dataset, sample_meta, params, work_dir, checkpoint,
-                         out_rds, setup, save_dir = NULL) {
+                         out_rds, setup) {
   setup(app_dir)
   aenv <- source_definitions(annot_script, ANNOTATION_FUNCTIONS, "PARAMS")
-  if (!is.null(save_dir)) {               # log to the output folder's annotation_log.txt as well
-    ann_dir <- file.path(save_dir, "annotation"); dir.create(ann_dir, recursive = TRUE, showWarnings = FALSE)
-    aenv$.an_log$file <- file.path(normalizePath(ann_dir, winslash = "/"), "annotation_log.txt")
-  }
   # work_dir and checkpoint are in the app's folders (this child process has its own tempdir)
   r <- annotate_saved_sample(aenv, qc_rds, sample_id, dataset, sample_meta, params, work_dir, checkpoint = checkpoint)
-  if (!is.null(save_dir)) r$saved <- save_annotated_sample(aenv, r, params, save_dir, sample_meta, dataset)
-  # keep only what saving needs from the references (they are large)
+  # keep only what the app needs from the references (they are large)
   r$refs <- structure(lapply(r$refs, function(x) list(source = x$source)), primary = attr(r$refs, "primary"))
   saveRDS(r, out_rds, compress = FALSE)
   TRUE
@@ -76,9 +69,9 @@ bg_poll <- function(job) {
 
 # ---- jobs that outlive the page ------------------------------------------------------------
 # A job's process is killed when nothing refers to it any more, which happens when the page
-# that started it disconnects. Annotation jobs are worth finishing (their results are cached,
-# and when saving they write their own outputs), so the app keeps them here, shared by every
-# page, until they end; a page that connects later is told about them.
+# that started it disconnects. Annotation jobs are worth finishing (their labels and malignant-cell
+# results are cached, so annotating the same cells again reuses them), so the app keeps them
+# here, shared by every page, until they end; a page that connects later is told about them.
 .app_jobs <- new.env()
 bg_keep <- function(job, sample_id, task, label) {
   key <- paste0(sample_id, "_", format(Sys.time(), "%H%M%OS3"))

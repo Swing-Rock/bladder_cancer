@@ -261,8 +261,6 @@ ui <- page_sidebar(
       ),
       accordion_panel(
         "Annotation", icon = icon("tags"),
-        checkboxInput("annotate_on_save", "Annotate each sample when saving", TRUE),
-        div(class = "form-text param-help mt-0", "Runs the annotation script (SingleR and/or marker genes, plus the malignant-cell method for scRNA-seq) on the saved QC'd object."),
         uiOutput("annotation_ui")
       ),
       accordion_panel(
@@ -276,7 +274,7 @@ ui <- page_sidebar(
                 "After Apply QC, runs scDblFinder + DecontX (scRNA-seq) and then the annotation preview, in that order, on the ",
                 "cells that pass the MAD cutoffs. They run in the background; the banner at the top shows progress. With ",
                 "dataset-level processing, each step runs on every sample in memory before the next one starts. Moving a slider ",
-                "afterwards makes the results out of date: run the steps again, or just save (saving redoes them). The annotation ",
+                "afterwards makes the results out of date: run the steps again before saving (saving doesn't run them). The annotation ",
                 "uses the Annotation panel's settings, including the malignant-cell method (copyKAT can take an hour; choose ",
                 "'none' there for a quick pass).")),
         conditionalPanel("input.input_mode == 'dataset'",
@@ -297,7 +295,9 @@ ui <- page_sidebar(
         "Save", icon = icon("floppy-disk"),
         textInput("out_dir", "Output folder", placeholder = "e.g. .../datasets/GSE.../qc_output"),
         browse_button("browse_out", "Choose folder…", "dir", "Choose the output folder"),
-        div(class = "form-text mb-2", "Files go to <output folder>/<dataset>/, same layout as the scripts."),
+        div(class = "form-text mb-2", "Each sample goes to <output folder>/<dataset>/<sample>/, with samplesheet.csv, summary.csv and ",
+            "log.txt at the top: the same layout as the scripts. Saving writes what is there: the QC result, plus ",
+            "scDblFinder + DecontX and the annotation if they were run on the cells being saved. It runs nothing itself."),
         busy_button("save", "Save this sample", "Saving…", icon = icon("floppy-disk"), class = "btn-success w-100 mb-2"),
         conditionalPanel("input.input_mode == 'dataset'",
           busy_button("save_all", "Save all samples in memory", "Saving all samples in memory…", icon = icon("layer-group"), class = "btn-outline-success w-100"))
@@ -315,11 +315,11 @@ ui <- page_sidebar(
     radioButtons("modality", "Data type", inline = TRUE,
                  choices = c("scRNA-seq" = "scrna", "Visium" = "visium", "Xenium" = "xenium")),
     radioButtons("input_mode", "What to load", inline = TRUE,
-                 choices = c("One sample" = "single", "Dataset folder (one sub-folder per sample)" = "dataset")),
-    textInput("path", "Path", placeholder = "paste a folder or file path", width = "100%"),
+                 choices = c("One sample" = "single", "Dataset (a folder, or a sample sheet)" = "dataset")),
+    textInput("path", "Path", placeholder = "paste a folder or file path (dataset: a folder, or a sample sheet .csv)", width = "100%"),
     div(class = "d-flex gap-2 mb-2",
         browse_button("browse_in_dir", "Folder…", "dir", "Choose the folder"),
-        conditionalPanel("input.input_mode == 'single'", browse_button("browse_in_file", "File…", "file", "Choose the sample file"))),
+        browse_button("browse_in_file", "File…", "file", "Choose the sample file (or, for a dataset, its sample sheet .csv)")),
     div(class = "form-text mb-3", textOutput("path_hint", inline = TRUE)),
     layout_columns(col_widths = c(6, 6),
                    conditionalPanel("input.input_mode == 'single'", textInput("sample_id", "Sample ID")),
@@ -328,15 +328,17 @@ ui <- page_sidebar(
       checkboxInput("skip_done", "Skip samples already saved in the output folder", TRUE)),
     div(class = "form-text", "Loading reads the data and measures every cell or spot. Nothing is filtered until you click ",
         strong("Apply QC"), ", so data that has already been QC'd can be loaded and looked at as it is."),
-    tags$button(type = "button", class = "btn btn-sm btn-outline-secondary w-100 mt-3 collapsed qc-collapse-toggle",
-                `data-bs-toggle` = "collapse", `data-bs-target` = "#qc-fill-sheet", `aria-expanded` = "false",
-                icon("table"), " Fill in from a sample sheet ", span(class = "qc-chevron", icon("chevron-down"))),
-    div(id = "qc-fill-sheet", class = "collapse",
-        div(class = "pt-2",
-            div(class = "form-text mb-2", "One sample: copy its path and settings from an existing sample sheet."),
-            textInput("sheet_path", "Sample sheet (.csv)", placeholder = "path to samplesheet.csv"),
-            browse_button("browse_sheet", "Browse…", "file", "Choose a sample sheet"),
-            uiOutput("sheet_rows_ui"))),
+    conditionalPanel("input.input_mode == 'single'",
+      tags$button(type = "button", class = "btn btn-sm btn-outline-secondary w-100 mt-3 collapsed qc-collapse-toggle",
+                  `data-bs-toggle` = "collapse", `data-bs-target` = "#qc-fill-sheet", `aria-expanded` = "false",
+                  icon("table"), " Fill in from a sample sheet ", span(class = "qc-chevron", icon("chevron-down"))),
+      div(id = "qc-fill-sheet", class = "collapse",
+          div(class = "pt-2",
+              div(class = "form-text mb-2", "One sample: copy its path and settings from an existing sample sheet. ",
+                  "(To load every row of a sample sheet, choose 'Dataset' above and give the sheet as the path.)"),
+              textInput("sheet_path", "Sample sheet (.csv)", placeholder = "path to samplesheet.csv"),
+              browse_button("browse_sheet", "Browse…", "file", "Choose a sample sheet"),
+              uiOutput("sheet_rows_ui")))),
     footer = tagList(tags$button(type = "button", class = "btn btn-outline-secondary", `data-qc-close` = "qc-load", "Close"),
                      uiOutput("load_button", inline = TRUE))),
   div(class = "d-flex gap-3 align-items-start",
@@ -361,12 +363,12 @@ ui <- page_sidebar(
             nav_panel("Doublets & ambient",
                       div(class = "d-flex gap-2 align-items-center mb-2",
                           busy_button("run_extra", "Run scDblFinder + DecontX on the cells that pass", "Running scDblFinder + DecontX…", icon = icon("flask"), class = "btn-outline-primary"),
-                          span(class = "form-text", "Runs the script's detect_doublets() and correct_ambient(). Saving runs them too if needed.")),
+                          span(class = "form-text", "Runs the script's detect_doublets() and correct_ambient(). Saving includes their result if it is for the cells being saved.")),
                       plotOutput("extra_plot", height = "380px")),
             nav_panel("Annotation", value = "Annotation",
                       div(class = "d-flex flex-wrap gap-2 align-items-center mb-2",
                           busy_button("run_annot", "Annotate the cells that pass (preview)", "Annotating…", icon = icon("tags"), class = "btn-outline-primary"),
-                          span(class = "form-text", "Uses the settings in the Annotation panel. Saving reuses this result if the cells and settings haven't changed.")),
+                          span(class = "form-text", "Uses the settings in the Annotation panel (and the sample's sample-sheet row). Saving includes this result if it was made for the cells being saved.")),
                       uiOutput("annot_status"),
                       plotOutput("annot_plot", height = "auto"),
                       tableOutput("annot_table")),
@@ -376,7 +378,7 @@ ui <- page_sidebar(
                                      card(card_header("Cutoffs"), tableOutput("cutoff_table"))),
                       card(card_header("Medians"), tableOutput("median_table"))),
             nav_panel("Dataset", value = "Dataset",
-                      div(class = "form-text mb-2", "Every sample in the dataset folder. Kept counts update when a sample is saved or viewed."),
+                      div(class = "form-text mb-2", "Every sample in the dataset folder or sample sheet. Kept counts update when a sample is saved or viewed."),
                       tableOutput("dataset_table")),
             nav_panel("Log", verbatimTextOutput("log_text"))
           )))
@@ -396,12 +398,13 @@ server <- function(input, output, session) {
                        # patient / sample metadata, annotation
                        sample_meta = NULL, prefill_patient = NULL, annot_n = 0,
                        # dataset-level runs
-                       queue = NULL, queue_label = NULL, queue_go = 0, chain = NULL, save_annot = list())
+                       queue = NULL, queue_label = NULL, queue_go = 0, chain = NULL)
   # Loaded samples' heavy data live here (not reactive, so switching never copies them):
   # bank[[id]] = list(data, p_loaded, qc, looks, slider_cfg, slider_values, slider_set, extra)
   # qc = FALSE until you click Apply QC: the data are only read and measured until then.
   bank <- new.env()
-  flags <- new.env(); flags$no_annot <- FALSE   # "save QC without annotating" for one action
+  # A dataset loaded from a sample sheet: rows (by sample_id), the sheet's folder and file
+  ds_sheet <- new.env()
 
   add_log <- function(x) isolate(rv$log <- tail(c(rv$log, x), 3000))
   logged <- function(expr) withCallingHandlers(expr,
@@ -433,6 +436,7 @@ server <- function(input, output, session) {
 
   clear_all <- function() {
     rm(list = ls(bank), envir = bank)
+    rm(list = ls(ds_sheet), envir = ds_sheet)
     rv$data <- NULL; rv$extra <- NULL; rv$slider_cfg <- NULL; rv$active <- NULL; rv$p_loaded <- NULL; rv$qc <- FALSE
     rv$samples <- NULL; rv$batch_n <- 0; rv$batch_info <- NULL
     gc(verbose = FALSE)
@@ -448,12 +452,14 @@ server <- function(input, output, session) {
   observe({ if (identical(input$input_mode, "dataset")) nav_show("tabs", "Dataset") else nav_hide("tabs", "Dataset") })
   output$path_hint <- renderText({
     if (identical(input$input_mode, "dataset"))
-      "A folder with one sub-folder per sample (for scRNA, one count file per sample also works). Sub-folder names become sample IDs."
+      paste("A folder with one sub-folder per sample (for scRNA, one count file per sample also works; sub-folder names become sample IDs),",
+            "or a sample sheet .csv: every row is loaded, each with its own settings (QC settings, cutoff_* columns, patient,",
+            "annot_* annotation settings). An output folder's samplesheet.csv reproduces that run.")
     else mod()$path_hint
   })
   output$load_button <- renderUI({
     if (identical(input$input_mode, "dataset"))
-      busy_button("load", "Scan folder and load first batch", "Scanning the folder and loading samples…", icon = icon("play"), class = "btn-primary")
+      busy_button("load", "Load the dataset (first batch)", "Finding the samples and loading the first batch…", icon = icon("play"), class = "btn-primary")
     else busy_button("load", "Load sample", "Loading the sample…", icon = icon("play"), class = "btn-primary")
   })
   output$data_box <- renderUI({
@@ -461,7 +467,7 @@ server <- function(input, output, session) {
     if (is.null(s) || is.null(rv$mod)) return(div(class = "text-muted", icon("circle-info"), " No data loaded yet."))
     n_qc <- sum(vapply(in_memory(), has_qc, TRUE)); rv$qc
     tagList(div(class = "fw-semibold", MODALITIES[[rv$mod]]$label, " · ",
-                if (nrow(s) > 1) sprintf("%s (%d samples)", input$dataset, nrow(s)) else s$sample_id[1]),
+                if (nrow(s) > 1) sprintf("%s (%d samples)", paste(unique(s$dataset %||% input$dataset), collapse = ", "), nrow(s)) else s$sample_id[1]),
             div(class = "text-muted small", if (nrow(s) > 1) sprintf("%d in memory, QC applied to %d", length(in_memory()), n_qc)
                                             else if (n_qc) "QC applied" else "QC not applied yet"))
   })
@@ -494,6 +500,7 @@ server <- function(input, output, session) {
     p <- gsub("\\\\", "/", clean_path(input$path))
     if (!nzchar(p)) return()
     if (identical(input$input_mode, "dataset")) {
+      if (grepl("\\.csv$", p, ignore.case = TRUE)) return()   # a sample sheet: its rows have their own dataset
       if (input$dataset %in% c("", "dataset1") || identical(input$dataset, rv$auto_dataset)) {
         rv$auto_dataset <- dataset_name_from_dir(p)
         updateTextInput(session, "dataset", value = rv$auto_dataset)
@@ -539,6 +546,7 @@ server <- function(input, output, session) {
     updateTextInput(session, "sample_id", value = p$sample_id)
     updateTextInput(session, "dataset", value = p$dataset)
     rv$prefill <- p
+    rv$prefill_row <- list(row = rv$sheet$df[i, , drop = FALSE], dir = rv$sheet$dir)   # its cutoff_* and other columns, used on loading
     pcol <- intersect(c("patient_id", "patient"), names(rv$sheet$df))
     rv$prefill_patient <- if (length(pcol) && !is.na(rv$sheet$df[[pcol[1]]][i])) rv$sheet$df[[pcol[1]]][i] else NULL
     if (!nzchar(input$out_dir %||% "")) updateTextInput(session, "out_dir", value = file.path(rv$sheet$dir, "qc_output"))
@@ -569,8 +577,12 @@ server <- function(input, output, session) {
   outputOptions(output, "advanced_qc_ui", suspendWhenHidden = FALSE)
   outputOptions(output, "advanced_ui", suspendWhenHidden = FALSE)
 
-  # A one-row sample sheet from the inputs, parsed by the script's own resolve_sample()
-  params_for <- function(sample_id, path, dataset = input$dataset) {
+  # A one-row sample sheet from the inputs, parsed by the script's own resolve_sample().
+  # sheet: list(row, dir, pin) for a sample from a sample sheet. pin = TRUE (a dataset loaded from a
+  # sheet): the row's values win over the inputs, and its QC settings stay with the sample
+  # (attr(p, "row_set")). pin = FALSE (one sample filled in from a sheet; the inputs hold its
+  # settings): only the row's other columns are used (cutoff_*, patient, notes, annot_*, ...).
+  params_for <- function(sample_id, path, dataset = input$dataset, sheet = NULL) {
     env <- engine()
     row <- list(sample_id = trimws(sample_id %||% ""), path = clean_path(path), dataset = trimws(dataset %||% ""))
     for (nm in setdiff(names(env$DEFAULTS), "dataset")) {
@@ -580,7 +592,33 @@ server <- function(input, output, session) {
       row[[nm]] <- if (!length(v) || is.na(v) || !nzchar(trimws(v))) NA_character_ else v
     }
     for (k in c("sample_id", "path", "dataset")) if (!nzchar(row[[k]])) row[[k]] <- NA_character_
-    resolve_row(env, as.data.frame(row, stringsAsFactors = FALSE, check.names = FALSE), 1, APP_DIR)
+    dir <- APP_DIR
+    if (!is.null(sheet)) {
+      dir <- sheet$dir
+      sr <- sheet$row
+      cols <- if (isTRUE(sheet$pin)) names(sr) else setdiff(names(sr), c("sample_id", "path", "dataset", names(env$DEFAULTS)))
+      for (nm in cols) { v <- sr[[nm]]; if (length(v) == 1 && !is.na(v) && nzchar(trimws(v))) row[[nm]] <- as.character(v) }
+      if (isTRUE(sheet$pin)) row$path <- gsub("\\\\", "/", sr$path)   # relative to the sheet's folder
+    }
+    res <- resolve_row(env, as.data.frame(row, stringsAsFactors = FALSE, check.names = FALSE), 1, dir)
+    if (isTRUE(sheet$pin)) attr(res$params, "row_set") <- c(sheet_set_params(env, sheet$row), "dataset")
+    res
+  }
+  # The QC settings a sample's sheet row sets, for messages: the ones that differ from the defaults
+  row_set_text <- function(env, p) {
+    rs <- setdiff(attr(p, "row_set"), c("dataset", "format"))
+    dif <- rs[!vapply(rs, function(nm) same_val(env$DEFAULTS[[nm]], p[[nm]]), TRUE)]
+    txt <- function(nms) paste(sprintf("%s = %s", nms, vapply(nms, function(nm) fmt_val(p[[nm]]), "")), collapse = ", ")
+    if (length(rs) <= 6) return(txt(rs))
+    sprintf("%d QC settings (%s)", length(rs), if (length(dif)) paste("not the defaults:", txt(dif)) else "all the defaults")
+  }
+  # The sample-sheet row a sample was (or will be) loaded from, as params_for()'s `sheet`
+  sheet_for <- function(id) {
+    if (!is.null(ds_sheet$rows[[id]])) return(list(row = ds_sheet$rows[[id]], dir = ds_sheet$dir, pin = TRUE))
+    pr <- isolate(rv$prefill_row)
+    if (!is.null(pr) && identical(isolate(input$input_mode), "single") && identical(pr$row$sample_id, id))
+      return(list(row = pr$row, dir = pr$dir, pin = FALSE))
+    NULL
   }
   current_params_raw <- reactive({
     env <- engine(); req(!inherits(env, "error"))
@@ -590,10 +628,13 @@ server <- function(input, output, session) {
 
   load_keys <- reactive(c(if (identical(input$input_mode, "single")) c("sample_id", "path"), load_params(input$modality)))
 
-  # A sample's loaded parameters + the live (non-loading) parameters from the inputs
+  # A sample's loaded parameters + the live (non-loading) parameters from the inputs, except the
+  # ones its sample-sheet row sets
   merge_live <- function(p_loaded, cur) {
     p <- p_loaded
-    for (nm in setdiff(names(cur), c("sample_id", "path", load_params(isolate(input$modality))))) p[[nm]] <- cur[[nm]]
+    m <- isolate(input$modality)
+    keep <- c("sample_id", "path", load_params(m), attr(p_loaded, "row_set"))
+    for (nm in setdiff(intersect(names(cur), names(get_engine(m)$DEFAULTS)), keep)) p[[nm]] <- cur[[nm]]
     p
   }
   p_live <- reactive({ req(rv$p_loaded); merge_live(rv$p_loaded, current_params()$params) })
@@ -682,7 +723,7 @@ server <- function(input, output, session) {
     m <- isolate(input$modality)
     env <- tryCatch(get_engine(m), error = function(e) { fail(e, "Loading the QC script"); NULL })
     if (is.null(env)) return(FALSE)
-    res <- params_for(id, path, dataset)
+    res <- params_for(id, path, dataset, sheet_for(id))
     if (length(res$problems)) {
       add_log(paste(res$problems, collapse = "\n")); set_sample(id, status = "failed", note = paste(res$problems, collapse = "; "))
       return(FALSE)
@@ -695,7 +736,11 @@ server <- function(input, output, session) {
       set_sample(id, status = "failed", note = conditionMessage(d)); return(FALSE)
     }
     add_log(sprintf("[%s] input looks like %s", id, d$looks$text))
-    bank[[id]] <- list(data = d, p_loaded = p, qc = FALSE, looks = d$looks,
+    tc <- take_cutoffs(env, p)            # cutoff_* columns of its sample-sheet row: the sliders start there
+    if (length(setdiff(attr(p, "row_set"), "dataset")) || length(tc$cutoffs))
+      add_log(sprintf("[%s] from its sample-sheet row: %s%s", id, row_set_text(env, p),
+                      if (length(tc$cutoffs)) paste0("; cutoffs ", paste(sprintf("%s = %s", names(tc$cutoffs), vapply(tc$cutoffs, fmt_val, "")), collapse = ", ")) else ""))
+    bank[[id]] <- list(data = d, p_loaded = tc$p, row_cutoffs = tc$cutoffs, qc = FALSE, looks = d$looks,
                        slider_cfg = NULL, slider_values = NULL, slider_set = NULL, extra = NULL)
     set_sample(id, status = "loaded", n_in = nrow(d$meta), n_kept = NA_integer_, looks = d$looks$short, note = "")
     TRUE
@@ -750,14 +795,18 @@ server <- function(input, output, session) {
       th <- auto_thresholds(m, env, e$data, p)
       rv$load_n <- isolate(rv$load_n) + 1
       sl <- restore_sliders(MODALITIES[[m]]$sliders, e$data$meta, th, isolate(rv$load_n), e$slider_cfg, e$slider_values, e$slider_set)
-    } else sl <- list(cfg = NULL, set = list())     # QC not applied: no sliders yet
+      sl$exact <- e$slider_exact %||% list()
+      if (is.null(e$slider_cfg) && length(e$row_cutoffs)) {   # first time on screen: the sample sheet's cutoffs
+        sc <- sheet_cutoff_sliders(sl$cfg, e$row_cutoffs); sl$cfg <- sc$cfg; sl$exact <- sc$exact
+      }
+    } else sl <- list(cfg = NULL, set = list(), exact = list())     # QC not applied: no sliders yet
     rv$qc <- isTRUE(e$qc)
     rv$looks <- e$looks
     rv$mod <- m
     rv$p_loaded <- e$p_loaded
     rv$extra <- e$extra
     rv$slider_set <- sl$set
-    rv$slider_exact <- e$slider_exact %||% list()
+    rv$slider_exact <- sl$exact
     rv$slider_cfg <- sl$cfg
     rv$data <- e$data
     rv$active <- id
@@ -782,7 +831,6 @@ server <- function(input, output, session) {
     todo <- c(s$sample_id[s$status == "pending"], s$sample_id[s$status == "unsaved"])
     if (!length(todo)) { showNotification("No samples left to load.", type = "message"); return() }
     cap <- max(1, as.integer(isolate(input$max_batch) %||% MAX_BATCH_DEFAULT))
-    ds <- isolate(input$dataset)
     loaded <- character(0); biggest <- 0; stop_reason <- NULL
     withProgress(message = "Loading samples", value = 0, {
       for (id in todo) {
@@ -795,7 +843,7 @@ server <- function(input, output, session) {
         }
         incProgress(1 / min(cap, length(todo)), detail = id)
         before <- r_mem_used_gb()
-        ok <- load_one(id, s$path[match(id, s$sample_id)], ds)
+        ok <- load_one(id, s$path[match(id, s$sample_id)], s$dataset[match(id, s$sample_id)])
         biggest <- max(biggest, r_mem_used_gb() - before)
         if (ok) loaded <- c(loaded, id)
       }
@@ -813,7 +861,66 @@ server <- function(input, output, session) {
   observeEvent(input$load, {
     env <- engine()
     if (inherits(env, "error")) { fail(env, "Loading the QC script"); return() }
-    if (identical(input$input_mode, "single")) {
+    # Visium data that isn't in Space Ranger folders is turned into them first, written next to
+    # the data, then loaded as a dataset:
+    #   - a combined .h5ad (several sections in one file, e.g. GSE171351) is split into one folder
+    #     per section (R/h5ad.R)
+    #   - GEO loose files (counts .csv + spot_coordinates .csv + image per sample, e.g. GSE246011)
+    #     become one folder per sample (R/geo_visium.R)
+    # Picked as a file: that file's sections / sample only. A folder: everything in it is converted,
+    # and the folder scan then finds the new folders (a one-sample folder works in either mode).
+    mode <- input$input_mode
+    split_sheet <- NULL; split_out <- NULL; sheet_shown <- TRUE
+    if (identical(input$modality, "visium")) {
+      p0 <- clean_path(input$path)
+      is_file <- nzchar(p0) && file.exists(p0) && !dir.exists(p0)
+      is_dir <- nzchar(p0) && dir.exists(p0)
+      targets <- if (is_file) p0 else if (identical(mode, "dataset") && is_dir)
+        list.files(p0, pattern = "\\.h5ad$", full.names = TRUE, ignore.case = TRUE) else character(0)
+      targets <- Filter(is_combined_visium_h5ad, targets)
+      for (f in targets) {
+        sp <- tryCatch(withProgress(message = sprintf("Splitting %s into sections", basename(f)), value = 0.05,
+                                    split_visium_h5ad(f, progress = function(k, n, nm) setProgress(k / (n + 1), detail = nm))),
+                       error = function(e) e)
+        if (inherits(sp, "error")) { fail(sp, sprintf("Splitting %s", basename(f))); return() }
+        add_log(sp$log)
+        showNotification(sprintf("%s holds %d Visium sections: %s %s next to it. Loading them as dataset %s.", basename(f),
+                                 nrow(sp$samples), if (sp$reused) "using the folders already split" else "split into one folder each",
+                                 paste0("(", basename(sp$sheet), ")"), sp$dataset), type = "message", duration = 12)
+        if (is_file) { split_sheet <- sp$sheet; split_out <- file.path(dirname(dirname(sp$sheet)), "qc_output") }
+      }
+      geo_dir <- if (is_file && !length(targets)) dirname(p0) else if (is_dir) p0 else ""
+      if (nzchar(geo_dir)) {
+        gv <- tryCatch(withProgress(message = "Converting GEO Visium files into Space Ranger folders", value = 0.05,
+                                    convert_geo_visium_folder(geo_dir, only = if (is_file) p0,
+                                                              progress = function(k, n, d) setProgress((k - 0.5) / n, detail = d))),
+                       error = function(e) e)
+        if (inherits(gv, "error")) { fail(gv, "Converting the GEO Visium files"); return() }
+        if (!is.null(gv)) {
+          add_log(gv$log)
+          weak <- grep("WARNING", gv$log, value = TRUE)
+          showNotification(div(sprintf("Converted %d GEO Visium sample(s) into Space Ranger folders next to the files (%s). The image scale was fitted to the spots: check spatial/alignment_check_app.png in each sample folder.",
+                                       nrow(gv$samples), basename(gv$sheet)),
+                               if (length(weak)) div(class = "text-danger", "Weak image fit: ", paste(sub("^\\[([^]]+)\\].*", "\\1", weak), collapse = ", "))),
+                           type = if (length(weak)) "warning" else "message", duration = 20)
+          if (is_file || identical(mode, "single")) {
+            split_out <- file.path(dirname(normalizePath(geo_dir, winslash = "/")), "qc_output")
+            if (is_file) {   # just this sample: a one-row sheet
+              split_sheet <- tempfile("visium_converted_", fileext = ".csv"); sheet_shown <- FALSE
+              one <- gv$samples; one$path <- file.path(normalizePath(geo_dir, winslash = "/"), one$path)
+              write.csv(one, split_sheet, row.names = FALSE)
+            } else split_sheet <- gv$sheet
+          }
+        }
+      }
+      if (!is.null(split_sheet)) {
+        mode <- "dataset"
+        updateRadioButtons(session, "input_mode", selected = "dataset")
+        if (sheet_shown) updateTextInput(session, "path", value = split_sheet)
+        if (!nzchar(clean_path(input$out_dir))) updateTextInput(session, "out_dir", value = split_out)
+      }
+    }
+    if (identical(mode, "single")) {
       res <- current_params_raw()
       if (length(res$problems)) { showNotification(paste(res$problems, collapse = "\n"), type = "error", duration = 15); return() }
       p <- res$params
@@ -822,7 +929,7 @@ server <- function(input, output, session) {
         if (!is.null(chk)) { fail(chk, "Loading"); return() }
       }
       clear_all()
-      rv$samples <- data.frame(sample_id = p$sample_id, path = p$path, kind = "", looks = "", status = "pending",
+      rv$samples <- data.frame(sample_id = p$sample_id, path = p$path, kind = "", dataset = p$dataset, looks = "", status = "pending",
                                n_in = NA_integer_, n_kept = NA_integer_, manual = "", note = "",
                                patient = isolate(rv$prefill_patient) %||% "", annotated = "", job = "", stringsAsFactors = FALSE)
       ok <- withProgress(message = sprintf("Loading %s", p$sample_id), detail = "reading counts and computing QC metrics…",
@@ -833,36 +940,72 @@ server <- function(input, output, session) {
       if (!nzchar(input$out_dir %||% "")) updateTextInput(session, "out_dir", value = file.path(dirname(p$path), "qc_output"))
       return()
     }
-    # Dataset folder
-    dir <- clean_path(input$path)
-    if (!dir.exists(dir)) { showNotification("Dataset folder not found.", type = "error"); return() }
-    found <- find_samples(dir, input$modality)
-    if (!nrow(found$samples)) {
-      fail(paste0("No ", mod()$label, " samples found in ", dir, ".",
-                  if (nrow(found$skipped)) paste0("\nSkipped: ", paste(sprintf("%s (%s)", found$skipped$name, found$skipped$reason), collapse = "; "))),
-           "Scanning the folder")
-      return()
+    # Dataset: a folder (one sub-folder per sample) or a sample sheet (one row per sample)
+    dir <- split_sheet %||% clean_path(input$path)
+    from_sheet <- grepl("\\.csv$", dir, ignore.case = TRUE) && file.exists(dir) && !dir.exists(dir)
+    rows <- NULL
+    if (from_sheet) {
+      ds0 <- trimws(input$dataset %||% ""); if (!nzchar(ds0)) ds0 <- "dataset1"   # for rows without a dataset
+      sh <- tryCatch(read_dataset_sheet(dir, ds0), error = function(e) e)
+      if (inherits(sh, "error")) { fail(sh, "Reading the sample sheet"); return() }
+      if (length(sh$problems)) showNotification(paste("Sample sheet:", paste(sh$problems, collapse = "; ")), type = "warning", duration = 15)
+      if (!nrow(sh$samples)) { fail("The sample sheet has no samples.", "Reading the sample sheet"); return() }
+      found <- list(samples = sh$samples, skipped = data.frame(name = character(0), reason = character(0)))
+      rows <- sh$rows
+    } else {
+      if (!dir.exists(dir)) { showNotification("Dataset folder (or sample sheet .csv) not found.", type = "error"); return() }
+      found <- find_samples(dir, input$modality)
+      if (!nrow(found$samples)) {
+        fail(paste0("No ", mod()$label, " samples found in ", dir, ".",
+                    if (nrow(found$skipped)) paste0("\nSkipped: ", paste(sprintf("%s (%s)", found$skipped$name, found$skipped$reason), collapse = "; "))),
+             "Scanning the folder")
+        return()
+      }
+      if (nrow(found$skipped)) showNotification(paste0("Skipped ", nrow(found$skipped), " folder(s): ",
+                                                       paste(sprintf("%s (%s)", found$skipped$name, found$skipped$reason), collapse = "; ")),
+                                                type = "warning", duration = 15)
+      found$samples$dataset <- input$dataset
     }
-    if (nrow(found$skipped)) showNotification(paste0("Skipped ", nrow(found$skipped), " folder(s): ",
-                                                     paste(sprintf("%s (%s)", found$skipped$name, found$skipped$reason), collapse = "; ")),
-                                              type = "warning", duration = 15)
-    p0 <- params_for(found$samples$sample_id[1], found$samples$path[1])$params
-    if (input$modality %in% c("scrna", "xenium")) {
-      chk <- tryCatch({ env$check_packages(list(p0)); NULL }, error = function(e) e)
+    # check the packages the samples need (and, for a sheet, every row's settings) before loading anything
+    ps <- lapply(seq_len(nrow(found$samples)), function(i) {
+      id <- found$samples$sample_id[i]
+      params_for(id, found$samples$path[i], found$samples$dataset[i],
+                 if (from_sheet) list(row = rows[[id]], dir = dirname(normalizePath(dir, winslash = "/")), pin = TRUE))
+    })
+    bad <- Filter(function(r) length(r$problems), ps)
+    if (length(bad)) showNotification(div(strong("Some rows can't be loaded:"), pre(style = "white-space: pre-wrap; margin: 0",
+                                          paste(unlist(lapply(bad, `[[`, "problems")), collapse = "\n"))), type = "warning", duration = NULL)
+    good <- lapply(Filter(function(r) !length(r$problems), ps), `[[`, "params")
+    if (input$modality %in% c("scrna", "xenium") && length(good)) {
+      chk <- tryCatch({ env$check_packages(good); NULL }, error = function(e) e)
       if (!is.null(chk)) { fail(chk, "Loading"); return() }
     }
     out_dir <- clean_path(input$out_dir)
-    if (!nzchar(out_dir)) { out_dir <- file.path(dirname(normalizePath(dir, winslash = "/")), "qc_output"); updateTextInput(session, "out_dir", value = out_dir) }
+    if (!nzchar(out_dir) && !is.null(split_out)) out_dir <- split_out
+    if (!nzchar(out_dir)) {
+      out_dir <- if (from_sheet) env$default_out_dir(dir) else file.path(dirname(normalizePath(dir, winslash = "/")), "qc_output")
+      updateTextInput(session, "out_dir", value = out_dir)
+    }
     clear_all()
+    if (from_sheet) { ds_sheet$rows <- rows; ds_sheet$dir <- dirname(normalizePath(dir, winslash = "/")); ds_sheet$file <- dir }
+    patient <- if (from_sheet) vapply(found$samples$sample_id, function(id) {
+      r <- rows[[id]]; pc <- intersect(c("patient", "patient_id"), names(r))
+      if (length(pc) && !is.na(r[[pc[1]]])) r[[pc[1]]] else ""
+    }, "", USE.NAMES = FALSE) else ""
     s <- data.frame(found$samples, looks = "", status = "pending", n_in = NA_integer_, n_kept = NA_integer_, manual = "", note = "",
-                    patient = "", annotated = "", job = "", stringsAsFactors = FALSE)
+                    patient = patient, annotated = "", job = "", stringsAsFactors = FALSE)
+    for (r in bad) {
+      i <- match(r$params$sample_id, s$sample_id)
+      if (!is.na(i)) { s$status[i] <- "failed"; s$note[i] <- paste(r$problems, collapse = "; ") }
+    }
     if (isTRUE(input$skip_done)) {
-      done <- file.exists(file.path(out_dir, input$dataset, paste0(s$sample_id, "_qc.rds")))
+      done <- s$status == "pending" & file.exists(rds_path(out_dir, s$dataset, s$sample_id))
       s$status[done] <- "on_disk"
     }
     rv$samples <- s
     apply_sample_meta(quiet = TRUE)
-    add_log(sprintf("---- dataset %s: %d samples found in %s (%d already saved) ----", input$dataset, nrow(s), dir, sum(s$status == "on_disk")))
+    add_log(sprintf("---- %s: %d samples in %s (%d already saved) ----", if (from_sheet) "sample sheet" else paste("dataset", input$dataset),
+                    nrow(s), dir, sum(s$status == "on_disk")))
     load_next_batch()
     if (length(in_memory())) session$sendCustomMessage("qc-overlay", list(id = "qc-load", show = FALSE))
   })
@@ -874,8 +1017,17 @@ server <- function(input, output, session) {
 
   ## ---- sliders ---------------------------------------------------------------------------
   output$cutoff_heading <- renderUI({
-    req(rv$active, nrow(rv$samples %||% data.frame()) > 1)
-    div(class = "form-text mb-2", "Cutoffs for ", strong(rv$active), " (each sample keeps its own).")
+    req(rv$active)
+    rs <- setdiff(attr(rv$p_loaded, "row_set"), "dataset")
+    cut <- if (exists(rv$active, envir = bank, inherits = FALSE)) bank[[rv$active]]$row_cutoffs
+    multi <- nrow(rv$samples %||% data.frame()) > 1
+    if (!multi && !length(rs) && !length(cut)) return(NULL)
+    div(class = "form-text mb-2",
+        if (multi) tagList("Cutoffs for ", strong(rv$active), " (each sample keeps its own). "),
+        if (length(rs)) tagList("Its sample-sheet row sets ", code(row_set_text(engine(), rv$p_loaded)),
+                                ": the Advanced settings don't change those for this sample. "),
+        if (length(cut)) tagList("The row's ", code(paste(sprintf("cutoff_%s = %s", names(cut), vapply(cut, fmt_val, "")), collapse = ", ")),
+                                 " set the starting position of its sliders."))
   })
   output$sliders_ui <- renderUI({
     cfg <- rv$slider_cfg
@@ -1065,8 +1217,10 @@ server <- function(input, output, session) {
       vals <- lapply(cfg, function(c) isolate(input[[c$input_id]]))
     } else if (!is.null(e$slider_cfg)) {
       cfg <- e$slider_cfg; set <- e$slider_set; vals <- e$slider_values; exact <- e$slider_exact
-    } else {
-      cfg <- slider_config(MODALITIES[[m]]$sliders, e$data$meta, th); set <- NULL; vals <- NULL; exact <- NULL
+    } else {                 # never on screen: MAD cutoffs, or the ones its sample-sheet row fixes
+      cfg <- slider_config(MODALITIES[[m]]$sliders, e$data$meta, th)
+      set <- lapply(cfg, `[[`, "value"); vals <- set; exact <- NULL
+      if (length(e$row_cutoffs)) { sc <- sheet_cutoff_sliders(cfg, e$row_cutoffs); vals <- lapply(sc$cfg, `[[`, "value"); exact <- sc$exact }
     }
     st <- resolve_cutoffs(th, cfg, vals, set, exact)
     meta <- suppressMessages(apply_filters(m, env, e$data, st$th, p))
@@ -1136,7 +1290,7 @@ server <- function(input, output, session) {
 
   output$dataset_table <- renderTable({
     s <- rv$samples; req(s)
-    data.frame(Sample = s$sample_id,
+    out <- data.frame(Sample = s$sample_id,
                Status = vapply(s$status, function(x) (STATUS_STYLE[[x]] %||% STATUS_STYLE$pending)$label, ""),
                `Looks like` = s$looks,
                In = ifelse(is.na(s$n_in), "", format(s$n_in, big.mark = ",")),
@@ -1144,6 +1298,8 @@ server <- function(input, output, session) {
                `% kept` = ifelse(is.na(s$n_in), "", sprintf("%.1f", 100 * s$n_kept / pmax(s$n_in, 1))),
                `Manual cutoffs` = s$manual, Patient = s$patient, Annotated = s$annotated,
                Input = s$path, Note = s$note, check.names = FALSE)
+    if (length(unique(s$dataset)) > 1) out <- cbind(out[1], Dataset = s$dataset, out[-1])
+    out
   }, striped = TRUE, spacing = "s")
 
   ## ---- status + value boxes -------------------------------------------------------------------
@@ -1261,7 +1417,7 @@ server <- function(input, output, session) {
   output$extra_plot <- renderPlot({
     req(loaded_ok(), rv$mod == "scrna")
     validate(need(qc_ok(), "Apply QC first: these run on the cells that pass the cutoffs."))
-    validate(need(!is.null(rv$extra), "Not run yet. Click the button above (or just save; saving runs it)."))
+    validate(need(!is.null(rv$extra), "Not run yet. Click the button above (saving doesn't run it)."))
     th <- add_doublet_columns(th_state()$th, rv$extra$meta, rv$extra$doublet_threshold)
     g <- plot_extra(rv$extra$meta, th)
     validate(need(!is.null(g), "Both steps are switched off (run_doublets / run_decontx)."))
@@ -1303,25 +1459,24 @@ server <- function(input, output, session) {
     if (!nzchar(out_dir)) { showNotification("Choose an output folder first (Save panel).", type = "warning"); return(NULL) }
     out_dir
   }
-  rds_path <- function(out_dir, dataset, id) file.path(out_dir, dataset, paste0(id, "_qc.rds"))
+  rds_path <- function(out_dir, dataset, id) file.path(out_dir, dataset, id, paste0(id, ".rds"))
 
-  # A loaded sample's final QC result: cutoffs from its sliders, plus (scRNA) doublets and ambient RNA.
-  # run_extra = FALSE: use scDblFinder/DecontX results only if already computed for these cells.
-  qc_final <- function(id, run_extra = TRUE) {
+  # A loaded sample's final QC result: cutoffs from its sliders, plus (scRNA) the scDblFinder / DecontX
+  # results if they were computed for these cells (nothing is run here)
+  qc_final <- function(id) {
     st <- tryCatch(sample_state(id), error = function(e) { fail(e, paste("Preparing", id)); NULL })
     if (is.null(st)) return(NULL)
     e <- bank[[id]]; p <- st$p; meta <- st$meta; th <- st$th; extra <- NULL
     if (isTRUE(MODALITIES[[st$m]]$extra_step)) {
       ex <- if (identical(id, isolate(rv$active))) isolate(rv$extra) else e$extra
       valid <- !is.null(ex) && identical(ex$key, extra_key(meta, p))
-      if (!valid && run_extra) { ex <- run_extra_for(st$env, e$data, meta, p, id); if (is.null(ex)) return(NULL); valid <- TRUE }
       if (valid) {
         e$extra <- ex; bank[[id]] <- e
         if (identical(id, isolate(rv$active))) rv$extra <- ex
         extra <- ex
         meta <- apply_contamination(ex$meta, p)
         th <- add_doublet_columns(th, meta, ex$doublet_threshold)
-      } else {   # not run yet (preview): the columns scrna_qc.R's save_sample() expects, left empty
+      } else {   # not run (or for other cells): the columns scrna_qc.R's save_sample() expects, left empty
         meta$scDblFinder.score <- NA_real_; meta$scDblFinder.class <- NA_character_; meta$decontX_contamination <- NA_real_
       }
     }
@@ -1329,82 +1484,61 @@ server <- function(input, output, session) {
     list(st = st, e = e, p = p, meta = meta, th = th, extra = extra, doublets_done = !is.null(extra))
   }
 
-  # Annotate a sample whose QC'd object is at rds (reusing the preview if nothing changed) and save it
-  annotate_and_save <- function(id, rds, kept_cells, p, out_dir) {
-    aenv <- isolate(aengine())
-    if (inherits(aenv, "error")) stop(conditionMessage(aenv))
-    params <- annot_params(); sm <- sample_meta_for(id)
-    ann_dir <- file.path(out_dir, "annotation"); dir.create(ann_dir, recursive = TRUE, showWarnings = FALSE)
-    aenv$.an_log$file <- file.path(normalizePath(ann_dir, winslash = "/"), "annotation_log.txt")
-    on.exit(aenv$.an_log$file <- NULL, add = TRUE)
-    pre <- if (exists(id, envir = bank, inherits = FALSE)) bank[[id]]$annot else NULL
-    r <- if (!is.null(pre) && identical(pre$key, annotation_key(kept_cells, params))) pre else
-      withProgress(message = sprintf("Annotating %s", id), detail = "SingleR (+ malignant-cell calling)", value = 0.3,
-                   logged(annotate_saved_sample(aenv, rds, id, p$dataset, sm, params,
-                                                work_dir = file.path(preview_dir(id), "cnv"))))
-    logged(save_annotated_sample(aenv, r, params, out_dir, sm, p$dataset))
+  # The settings a sample is annotated with: the Annotation panel's, with its sample-sheet row's
+  # annot_* columns on top
+  annot_params_for <- function(id) {
+    base <- annot_params()
+    ex <- if (exists(id, envir = bank, inherits = FALSE)) bank[[id]]$p_loaded$extra_columns
+    if (!length(grep("^annot_", names(ex)))) return(base)
+    rp <- isolate(aengine())$row_params(c(list(sample_id = id), ex), base)
+    if (length(rp$problems)) add_log(paste(rp$problems, collapse = "\n"))
+    rp$params
+  }
+  annot_row_text <- function(id) {
+    ex <- if (exists(id, envir = bank, inherits = FALSE)) bank[[id]]$p_loaded$extra_columns
+    ex <- ex[grep("^annot_", names(ex))]
+    ex <- ex[!vapply(ex, function(v) is.na(v) || !nzchar(v), TRUE)]
+    if (length(ex)) paste(sprintf("%s = %s", sub("^annot_", "", names(ex)), unlist(ex)), collapse = ", ")
   }
 
-  # Save one loaded sample (on screen or not). Returns export_sample()'s result, or NULL.
+  # Save one loaded sample (on screen or not), as it is: QC, plus scDblFinder / DecontX and the
+  # annotation when they were run on the cells being saved. Runs nothing. Returns export_sample()'s
+  # result (with $left_out: what wasn't included and why), or NULL.
   save_one <- function(id, out_dir) {
-    q <- qc_final(id, run_extra = TRUE)
+    q <- qc_final(id)
     if (is.null(q)) return(NULL)
     st <- q$st; sm <- sample_meta_for(id)
+    left_out <- character(0)
+    if (isTRUE(MODALITIES[[st$m]]$extra_step) && !q$doublets_done && (isTRUE(q$p$run_doublets) || isTRUE(q$p$run_decontx)))
+      left_out <- c(left_out, if (is.null(q$e$extra)) "scDblFinder + DecontX: not run" else "scDblFinder + DecontX: run on other cells (the cutoffs changed since); run them again")
+    pre <- q$e$annot; kept <- rownames(q$meta)[q$meta$keep]
+    annot <- NULL
+    if (!is.null(pre) && identical(pre$key$cells, sort(kept))) annot <- list(r = pre, params = pre$key$params)
+    else left_out <- c(left_out, if (is.null(pre)) "annotation: not run" else "annotation: made for other cells (the cutoffs or doublets changed since); annotate again")
+    aenv <- if (!is.null(annot)) isolate(aengine())
     res <- withProgress(message = sprintf("Saving %s", id), value = 0.1,
       tryCatch(logged(export_sample(st$m, st$env, q$e$data, q$meta, q$th, q$p, out_dir, st$auto, st$sources, q$extra,
-                                    progress = function(x) incProgress(0.25, detail = x), sample_meta = sm)),
+                                    progress = function(x) incProgress(0.3, detail = x), sample_meta = sm, annot = annot, aenv = aenv)),
                error = function(err) { fail(err, paste("Saving", id)); NULL }))
     if (is.null(res)) return(NULL)
-    set_sample(id, status = "saved", n_in = res$n_in, n_kept = res$n_kept,
-               manual = paste(names(st$sources)[st$sources == "manual"], collapse = ", "), note = "")
+    set_sample(id, status = "saved", n_in = res$n_in, n_kept = res$n_kept, manual = paste(res$manual, collapse = ", "), note = "",
+               annotated = if (!is.null(annot)) "saved" else if (is.null(pre)) "" else "not saved")
     res$patient <- sm$patient
-    if (isTRUE(isolate(input$annotate_on_save)) && !flags$no_annot) {
-      kept <- rownames(q$meta)[q$meta$keep]; params <- annot_params()
-      pre <- if (exists(id, envir = bank, inherits = FALSE)) bank[[id]]$annot else NULL
-      reuse <- !is.null(pre) && identical(pre$key, annotation_key(kept, params))
-      if (HAS_CALLR && !reuse) {
-        # annotating can take an hour (copyKAT): do it in a background process that writes the
-        # outputs itself, so the app stays responsive and a disconnect doesn't lose it
-        sa <- isolate(rv$save_annot)
-        sa[[id]] <- list(rds = res$rds, out_dir = out_dir, dataset = q$p$dataset, sample_meta = sm, params = params,
-                         script = isolate(aengine())$.script_path, key = annotation_key(kept, params))
-        rv$save_annot <- sa
-        set_sample(id, annotated = "queued")
-        res$bg_annot_queued <- TRUE
-      } else {
-        res$annotation <- tryCatch(annotate_and_save(id, res$rds, kept, q$p, out_dir),
-                                   error = function(err) { fail(explain_missing(conditionMessage(err)), paste("Annotating", id)); NULL })
-        set_sample(id, annotated = if (is.null(res$annotation)) "failed" else "saved")
-        if (!is.null(res$annotation)) res$files <- c(res$files, res$annotation$files)
-      }
-    }
+    res$left_out <- left_out
     res
-  }
-  drop_save_annotations <- function(ids) {
-    if (!length(ids)) return()
-    sa <- isolate(rv$save_annot); sa[ids] <- NULL; rv$save_annot <- sa
-    for (id in ids) set_sample(id, annotated = "not saved")
-  }
-  # Annotations waiting from a save: run them in the background, one sample after another
-  # (now, or when the run that is going now has finished)
-  start_save_annotations <- function() {
-    ids <- names(isolate(rv$save_annot))
-    if (!length(ids) || !is.null(isolate(rv$queue))) return(invisible(FALSE))
-    start_queue("annot_save", "Annotating (for saving)", only = ids)
   }
 
   # Annotate one loaded sample's passing cells (a preview: nothing is saved)
   job_annot <- function(id) {
-    aenv <- isolate(aengine()); params <- annot_params()
-    q <- qc_final(id, run_extra = FALSE)
+    aenv <- isolate(aengine()); params <- annot_params_for(id)
+    q <- qc_final(id)
     if (is.null(q)) return(FALSE)
     tmp <- preview_dir(id)
     dir.create(tmp, recursive = TRUE, showWarnings = FALSE)
     r <- withProgress(message = sprintf("Annotating %s", id), detail = "SingleR (+ malignant-cell calling for scRNA-seq; can take a while)", value = 0.2,
       tryCatch(logged({
-        q$st$env$save_sample(result_object(q$st$m, q$e$data, q$meta, q$th, q$p, q$extra), tmp)
-        annotate_saved_sample(aenv, file.path(tmp, paste0(id, "_qc.rds")), id, q$p$dataset, sample_meta_for(id), params,
-                              work_dir = file.path(tmp, "cnv"))
+        rds <- q$st$env$save_sample(result_object(q$st$m, q$e$data, q$meta, q$th, q$p, q$extra, sample_meta_for(id)), file.path(tmp, "qc"))
+        annotate_saved_sample(aenv, rds, id, q$p$dataset, sample_meta_for(id), params, work_dir = file.path(tmp, "cnv"))
       }), error = function(e) { fail(e, paste("Annotating", id)); NULL }))
     if (is.null(r)) return(FALSE)
     r$key <- annotation_key(rownames(q$meta)[q$meta$keep], params)
@@ -1419,7 +1553,7 @@ server <- function(input, output, session) {
     if (!qc_ok() && !dataset_level_on()) { need_qc("annotation"); return() }
     aenv <- aengine()
     if (inherits(aenv, "error")) { fail(aenv, "Loading the annotation script"); return() }
-    chk <- tryCatch({ aenv$check_packages(annot_params()); NULL }, error = function(e) e)
+    chk <- tryCatch({ aenv$check_packages(annot_params_for(rv$active)); NULL }, error = function(e) e)
     if (!is.null(chk)) { fail(explain_missing(conditionMessage(chk)), "Annotation"); return() }
     stash_active()
     if (dataset_level_on()) { start_queue("annot", "Annotating"); return() }
@@ -1444,11 +1578,9 @@ server <- function(input, output, session) {
   start_queue <- function(task, label, only = NULL) {
     if (!is.null(isolate(rv$queue))) { showNotification("A dataset-level run is already going.", type = "warning"); return(FALSE) }
     s <- isolate(rv$samples)
-    ids <- if (task == "annot_save") only else s$sample_id[s$sample_id %in% in_memory()]
+    ids <- s$sample_id[s$sample_id %in% in_memory()]
     if (!is.null(only)) ids <- ids[ids %in% only]
-    if (task == "annot_save") {
-      if (!length(ids)) return(FALSE)
-    } else if (task == "qc") {                     # only the samples that still need it
+    if (task == "qc") {                     # only the samples that still need it
       ids <- ids[!vapply(ids, has_qc, TRUE)]
       if (!length(ids)) { showNotification("QC is already applied to every sample in memory.", type = "message"); return(FALSE) }
     } else {
@@ -1484,24 +1616,15 @@ server <- function(input, output, session) {
               file.path(dir, "input.rds"), compress = FALSE)
       job <- bg_start(bg_extra_fun, list(app_dir = APP_DIR, qc_script = st$env$.script_path,
                                          in_rds = file.path(dir, "input.rds"), out_rds = out), dir)
-    } else if (task == "annot_save") {   # annotate the saved QC'd object; the child writes the outputs
-      if (bg_running_for(id)) stop(id, " is still being annotated by a run started before the page reconnected; ",
-                                   "save again once it has finished (it then reuses that run's labels and results)")
-      a <- isolate(rv$save_annot)[[id]]
-      job <- bg_start(bg_annot_fun, list(app_dir = APP_DIR, annot_script = a$script, qc_rds = a$rds, sample_id = id,
-                                         dataset = a$dataset, sample_meta = a$sample_meta, params = a$params,
-                                         work_dir = file.path(preview_dir(id), "cnv"),   # shared with previews: reuses their results
-                                         checkpoint = labels_checkpoint(id), out_rds = out, save_dir = a$out_dir), dir)
-      job$key <- a$key; job$doublets_done <- TRUE
     } else {
       if (bg_running_for(id)) stop(id, " is still being annotated by a run started before the page reconnected; ",
                                    "annotate again once it has finished (it then reuses that run's result)")
-      aenv <- isolate(aengine()); params <- annot_params()
-      q <- qc_final(id, run_extra = FALSE)
+      aenv <- isolate(aengine()); params <- annot_params_for(id)
+      q <- qc_final(id)
       if (is.null(q)) return(NULL)
-      logged(q$st$env$save_sample(result_object(q$st$m, q$e$data, q$meta, q$th, q$p, q$extra), dir))
+      rds <- logged(q$st$env$save_sample(result_object(q$st$m, q$e$data, q$meta, q$th, q$p, q$extra, sample_meta_for(id)), file.path(dir, "qc")))
       job <- bg_start(bg_annot_fun, list(app_dir = APP_DIR, annot_script = aenv$.script_path,
-                                         qc_rds = file.path(dir, paste0(id, "_qc.rds")), sample_id = id, dataset = q$p$dataset,
+                                         qc_rds = rds, sample_id = id, dataset = q$p$dataset,
                                          sample_meta = sample_meta_for(id), params = params,
                                          work_dir = file.path(preview_dir(id), "cnv"), checkpoint = labels_checkpoint(id),
                                          out_rds = out), dir)
@@ -1514,17 +1637,7 @@ server <- function(input, output, session) {
   finish_bg_job <- function(task, id, job, res) {
     add_log(c(sprintf("---- %s: background log ----", id), res$log_lines))
     if (!res$ok) {
-      if (task == "annot_save") set_sample(id, annotated = "failed")
       fail(res$error, paste(switch(task, qc = "Applying QC to", extra = "scDblFinder + DecontX", "Annotating"), id)); return(FALSE)
-    }
-    if (task == "annot_save") {          # outputs already written by the child; keep the result as this sample's preview
-      r <- readRDS(job$out); r$key <- job$key; r$doublets_done <- TRUE
-      set_sample(id, annotated = "saved")
-      if (exists(id, envir = bank, inherits = FALSE)) { e <- bank[[id]]; e$annot <- r; bank[[id]] <- e; rv$annot_n <- isolate(rv$annot_n) + 1 }
-      sa <- isolate(rv$save_annot); sa[[id]] <- NULL; rv$save_annot <- sa
-      showNotification(sprintf("Annotation of %s saved: %s", id, r$saved$summary %||% ""), type = "message", duration = 8)
-      unlink(job$dir, recursive = TRUE)
-      return(TRUE)
     }
     if (!exists(id, envir = bank, inherits = FALSE)) return(FALSE)
     e <- bank[[id]]
@@ -1555,7 +1668,7 @@ server <- function(input, output, session) {
     # Applying QC to Visium / Xenium is only the cutoffs (instant), so it runs here
     if (HAS_CALLR && !(q$task == "qc" && !identical(isolate(rv$mod), "scrna"))) {
       if (is.null(q$job)) {                                   # start this sample's job
-        job <- tryCatch(if (q$task == "annot_save" || exists(id, envir = bank, inherits = FALSE)) start_bg_job(q$task, id),
+        job <- tryCatch(if (exists(id, envir = bank, inherits = FALSE)) start_bg_job(q$task, id),
                         error = function(e) { fail(e, paste(q$label, id)); NULL })
         if (!is.null(job)) { q$job <- job; rv$queue <- q; invalidateLater(500); return() }
         ok <- FALSE
@@ -1577,7 +1690,6 @@ server <- function(input, output, session) {
       rv$queue <- q; queue_banner(); invalidateLater(150)
     } else {
       for (rest in q$ids) set_sample(rest, job = "")
-      if (q$task == "annot_save") drop_save_annotations(q$ids)   # stopped early: don't start these later on their own
       rv$queue <- NULL; queue_banner()
       showNotification(sprintf("%s: %d of %d samples done%s.", q$label, q$ok, q$total,
                                if (length(q$ids)) sprintf(" (stopped; %d not run)", length(q$ids)) else ""),
@@ -1588,15 +1700,14 @@ server <- function(input, output, session) {
         if (is.null(isolate(rv$chain)) && is.null(isolate(rv$queue)) && !isTRUE(q$stop) && length(q$ok_ids))
           showNotification("Automatic pipeline finished.", type = "message", duration = 8)
       }
-      if (q$task != "annot_save" && is.null(isolate(rv$queue))) start_save_annotations()
     }
   })
-  # When the page disconnects: an annotation job keeps running to the end (its result is cached,
-  # and when saving it writes the outputs itself), so a slow copyKAT run isn't lost; other jobs stop
+  # When the page disconnects: an annotation job keeps running to the end (its labels and
+  # malignant-cell results are cached), so a slow copyKAT run isn't lost; other jobs stop
   session$onSessionEnded(function() {
     q <- isolate(rv$queue)
     if (is.null(q$job)) return()
-    if (q$task %in% c("annot", "annot_save") && q$job$proc$is_alive()) bg_keep(q$job, q$ids[1], q$task, q$label)
+    if (q$task == "annot" && q$job$proc$is_alive()) bg_keep(q$job, q$ids[1], q$task, q$label)
     else bg_kill(q$job)
   })
   # A new page: say if an annotation started by an earlier page is still running, or has finished
@@ -1605,12 +1716,12 @@ server <- function(input, output, session) {
     if (!length(kept)) return()
     msg <- lapply(kept, function(x) tags$li(sprintf("%s: %s (%s, started %s)", x$sample_id,
       if (x$alive) "still running" else sprintf("finished %s", format(x$ended, "%H:%M")),
-      if (x$task == "annot_save") "annotating for saving; it writes the outputs itself" else "annotation preview",
+      "annotation preview",
       format(x$started, "%H:%M"))))
     showNotification(duration = NULL, type = "message", tagList(
       strong("Annotation runs from before the page reconnected"), tags$ul(class = "mb-1 ps-3", msg),
-      div(class = "small", "Annotating or saving the same sample again with the same cells and settings reuses their labels and ",
-          "malignant-cell results, so it's quick once they have finished.")))
+      div(class = "small", "Annotating the same sample again with the same cells and settings reuses their labels and ",
+          "malignant-cell results, so it's quick once they have finished. Then save it.")))
   })
   stop_queue <- function() {
     q <- rv$queue; req(q)
@@ -1654,7 +1765,6 @@ server <- function(input, output, session) {
     }
     set_sample(running, job = "failed", note = paste(q$label, "terminated"))
     for (rest in q$ids[-1]) set_sample(rest, job = "")
-    if (q$task == "annot_save") drop_save_annotations(q$ids)
     rv$queue <- NULL; queue_banner()
     add_log(sprintf("---- terminated: %s (%s; %d sample(s) not run) ----", q$label, running, length(q$ids) - 1))
     showNotification(sprintf("Terminated %s. %d of %d samples had finished.", q$label, q$ok, q$total), type = "warning", duration = 8)
@@ -1684,14 +1794,20 @@ server <- function(input, output, session) {
           sprintf("This sample is %s in a background run (see the banner at the top).", if (jb == "running") "being processed" else "queued"),
           if (!is.null(r)) " Showing its previous annotation below."),
       if (!is.null(r)) div(class = "small mb-2", strong("Labels: "), annotation_summary(r$obj))))
-    if (is.null(r)) return(div(class = "alert alert-light status-banner py-2", icon("circle-info"),
-                               " Not annotated yet. Click the button above, or tick 'Annotate each sample when saving' and save."))
-    stale <- !identical(r$key, annotation_key(rownames(filtered())[filtered()$keep], annot_params()))
+    row_txt <- annot_row_text(rv$active)
+    row_note <- if (!is.null(row_txt)) div(class = "form-text mb-2", "This sample's sample-sheet row sets ", code(row_txt),
+                                           "; those override the Annotation panel for it.")
+    if (is.null(r)) return(tagList(div(class = "alert alert-light status-banner py-2", icon("circle-info"),
+                                       " Not annotated yet. Annotate it (button above) before saving to include the annotation."), row_note))
+    kept <- sort(rownames(filtered())[filtered()$keep])
+    cells_changed <- !identical(r$key$cells, kept)
+    settings_changed <- !cells_changed && !identical(r$key$params, annot_params_for(rv$active))
     tagList(
-      if (stale) div(class = "alert alert-warning status-banner py-2", icon("triangle-exclamation"),
-                     " Cutoffs or annotation settings changed since this preview; saving will annotate again."),
-      if (rv$mod == "scrna" && !isTRUE(r$doublets_done)) div(class = "alert alert-info status-banner py-2", icon("circle-info"),
-                     " Preview made before doublet removal; the saved annotation uses the final cells."),
+      if (cells_changed) div(class = "alert alert-warning status-banner py-2", icon("triangle-exclamation"),
+                             " Made for other cells: the cutoffs (or the doublet removal) changed since. Saving leaves it out; annotate again first."),
+      if (settings_changed) div(class = "alert alert-info status-banner py-2", icon("circle-info"),
+                                " The annotation settings changed since this was made. Saving keeps this result (and its settings); annotate again to use the new ones."),
+      row_note,
       div(class = "small mb-2", strong("Labels: "), annotation_summary(r$obj)),
       if (!is.na(r$cnv$skipped %||% NA)) div(class = "form-text mb-2", "Malignant-cell step skipped: ", r$cnv$skipped))
   })
@@ -1709,6 +1825,10 @@ server <- function(input, output, session) {
   saved_modal <- function(results, ids) {
     ok <- Filter(Negate(is.null), results)
     if (!length(ok)) return()
+    out_dir <- ok[[1]]$out_dir
+    where <- p(class = "form-text", "Every setting used is in ", code("samplesheet.csv"), " (load it again, in the app or with the script, ",
+               "to reproduce this; cutoffs you set by hand are its cutoff_* columns), the numbers per sample in ", code("summary.csv"),
+               ", in ", code(out_dir), ".")
     if (length(ok) == 1) {
       r <- ok[[1]]; id <- names(ok)
       showModal(modalDialog(
@@ -1716,59 +1836,39 @@ server <- function(input, output, session) {
         p(sprintf("%s of %s %s kept.", format(r$n_kept, big.mark = ","), format(r$n_in, big.mark = ","), mod()$unit)),
         p(strong("Patient: "), if (is.na(r$patient %||% NA)) span(class = "text-warning", "not set") else r$patient),
         p(strong("Changes from the QC defaults: "), r$deviations),
-        if (!is.null(r$annotation)) tagList(p(strong("Annotation: "), r$annotation$summary),
-                                            p(strong("Changes from the annotation defaults: "), r$annotation$deviations)),
-        if (isTRUE(r$bg_annot_queued)) p(strong("Annotation: "), "running in the background (see the banner at the top). ",
-          "Its files appear in ", code("annotation/"), " when it finishes, even if this page disconnects meanwhile."),
-        p(class = "form-text", "Recorded in ", code("qc_parameters_used.csv"), ", with every parameter and cutoff used.",
-          if (r$n_deviations > 0) tagList(" ", code("app_samplesheet_rows.csv"),
-            if (r$reproducible) " has a sample-sheet row that reproduces these exact cutoffs with the script." else
-              " has a sample-sheet row, but the script could not reproduce these cutoffs exactly; check it.")),
-        tags$ul(lapply(unique(r$files[file.exists(r$files)]), function(f) tags$li(code(f))))))
+        if (!is.null(r$annotation)) p(strong("Annotation: "), r$annotation$summary),
+        if (length(r$left_out)) div(class = "alert alert-light py-2", strong("Not included: "), tags$ul(class = "mb-0", lapply(r$left_out, tags$li))),
+        where,
+        tags$details(tags$summary(sprintf("Files (%s)", r$dir)),
+                     tags$ul(lapply(unique(r$files[file.exists(r$files)]), function(f) tags$li(code(f)))))))
     } else {
       tab <- data.frame(Sample = names(ok), Patient = vapply(ok, function(r) if (is.na(r$patient %||% NA)) "—" else r$patient, ""),
                         Kept = vapply(ok, function(r) sprintf("%s / %s", format(r$n_kept, big.mark = ","), format(r$n_in, big.mark = ",")), ""),
                         `QC changes from defaults` = vapply(ok, `[[`, "", "deviations"),
-                        Annotation = vapply(ok, function(r) if (isTRUE(r$bg_annot_queued)) "running in the background" else
-                                                              if (is.null(r$annotation)) "—" else r$annotation$summary, ""), check.names = FALSE)
-      showModal(modalDialog(title = sprintf("Saved %d samples", length(ok)), easyClose = TRUE, size = "l",
-                            html_table(tab),
-                            p(class = "form-text", "Every parameter and deviation is in ", code("qc_parameters_used.csv"),
-                              " (and ", code("annotation/annotation_parameters_used.csv"), ") in the output folder.")))
+                        Annotation = vapply(ok, function(r) if (is.null(r$annotation)) "—" else r$annotation$summary, ""),
+                        `Not included` = vapply(ok, function(r) if (length(r$left_out)) paste(r$left_out, collapse = "; ") else "—", ""),
+                        check.names = FALSE)
+      showModal(modalDialog(title = sprintf("Saved %d samples", length(ok)), easyClose = TRUE, size = "l", html_table(tab), where))
     }
   }
 
   # Confirm before overwriting existing outputs, then run `action`
   confirm_then <- function(ids, action_name) {
     out_dir <- out_dir_ok(); if (is.null(out_dir)) return()
-    exist <- ids[file.exists(rds_path(out_dir, input$dataset, ids))]
+    s <- isolate(rv$samples)
+    exist <- ids[file.exists(rds_path(out_dir, s$dataset[match(ids, s$sample_id)], ids))]
     if (length(exist)) {
       rv$pending_action <- action_name
       showModal(modalDialog(title = "Overwrite?",
-        p(sprintf("%d sample(s) already have output in %s: %s", length(exist), file.path(out_dir, input$dataset),
+        p(sprintf("%d sample(s) already have output in %s: %s", length(exist), out_dir,
                   paste(head(exist, 10), collapse = ", "), if (length(exist) > 10) ", …" else "")),
-        p("Saving replaces their files and their rows in the summary tables."),
+        p("Saving replaces their folders (an annotation saved there earlier too, unless it is saved again now) ",
+          "and their rows in samplesheet.csv and summary.csv."),
         footer = tagList(modalButton("Cancel"), busy_button("confirm_action", "Overwrite", "Saving…", class = "btn-danger"))))
     } else run_action(action_name)
   }
   run_action <- function(action_name) {
     out_dir <- clean_path(input$out_dir)
-    if (isTRUE(input$annotate_on_save) && !flags$no_annot) {   # check once, not once per sample
-      aenv <- aengine()
-      chk <- if (inherits(aenv, "error")) aenv else tryCatch({ aenv$check_packages(annot_params()); NULL }, error = function(e) e)
-      if (!is.null(chk)) {
-        rv$pending_action <- action_name
-        showModal(modalDialog(title = "Annotation can't run",
-          pre(style = "white-space: pre-wrap", explain_missing(conditionMessage(chk))),
-          p("Nothing has been saved yet. You can save the QC results now and annotate later ",
-            "(with the annotation script, or by saving again from the app)."),
-          footer = tagList(modalButton("Cancel"),
-                           busy_button("save_no_annot", "Save QC without annotating", "Saving…", class = "btn-primary"))))
-        return()
-      }
-    }
-    on.exit(flags$no_annot <- FALSE, add = TRUE)
-    on.exit(start_save_annotations(), add = TRUE)
     if (action_name == "save_active") {
       id <- rv$active
       saved_modal(setNames(list(save_one(id, out_dir)), id))
@@ -1786,11 +1886,6 @@ server <- function(input, output, session) {
       auto_qc_rest(out_dir)
     }
   }
-  observeEvent(input$save_no_annot, {
-    removeModal(); act <- rv$pending_action; rv$pending_action <- NULL
-    flags$no_annot <- TRUE
-    run_action(act)
-  })
   observeEvent(input$confirm_action, { removeModal(); act <- rv$pending_action; rv$pending_action <- NULL; run_action(act) })
 
   observeEvent(input$save, {
@@ -1832,7 +1927,8 @@ server <- function(input, output, session) {
     showModal(modalDialog(title = "Auto-QC the remaining samples?",
       p(sprintf("%d sample(s) will be loaded, QC applied with the MAD cutoffs and the current settings, saved, and unloaded, one at a time:", length(rest))),
       p(class = "small", paste(rest, collapse = ", ")),
-      p("Samples in memory now are left alone. Each one's deviations from the defaults are still recorded in qc_parameters_used.csv."),
+      p("Samples in memory now are left alone. Only QC is saved for these (no scDblFinder + DecontX, no annotation); ",
+        "each one's settings go into samplesheet.csv."),
       footer = tagList(modalButton("Cancel"), busy_button("save_rest_go", "Run", "Auto-QC running…", class = "btn-primary"))))
   })
   observeEvent(input$save_rest_go, {
@@ -1844,12 +1940,11 @@ server <- function(input, output, session) {
     stash_active()
     s <- isolate(rv$samples)
     rest <- s$sample_id[s$status %in% c("pending", "unsaved") & !s$sample_id %in% in_memory()]
-    ds <- isolate(input$dataset)
     withProgress(message = "Auto-QC", value = 0, {
       for (k in seq_along(rest)) {
         id <- rest[k]
         incProgress(1 / length(rest), detail = sprintf("%s (%d of %d)", id, k, length(rest)))
-        if (!load_one(id, s$path[match(id, s$sample_id)], ds)) next
+        if (!load_one(id, s$path[match(id, s$sample_id)], s$dataset[match(id, s$sample_id)])) next
         if (!apply_qc(id)) next
         save_one(id, out_dir)
         rm(list = id, envir = bank); gc(verbose = FALSE)

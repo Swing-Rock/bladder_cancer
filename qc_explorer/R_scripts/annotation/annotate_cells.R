@@ -4,12 +4,11 @@
 # (copyKAT / inferCNV) for QC'd samples
 #
 # Usage
-#   Rscript annotate_cells.R <input> [out_dir]
-#     input   EITHER a folder holding <sample>_qc.rds files (from scrna_qc.R,
-#             visium_qc.R, xenium_qc.R or the QC app; searched recursively, so
-#             pointing at qc_output/ covers every dataset)
-#             OR a .csv with a `path` column listing .rds files. Optional columns:
-#             sample_id, dataset, patient_id (added to every cell's metadata as `patient`)
+#   Rscript annotate_cells.R <qc output folder>      (or that folder's samplesheet.csv)
+#     The output folder of scrna_qc.R, visium_qc.R, xenium_qc.R or the QC app. Every sample in
+#     its samplesheet.csv is annotated (without a samplesheet.csv: every <dataset>/<sample>/<sample>.rds).
+#     Settings: PARAMS below, for every sample; a sample-sheet column annot_<name> changes one
+#     setting for that row's sample (e.g. annot_malignant_method = none; several values: a;b).
 #   ...or open bladder cancer.Rproj in RStudio, set INPUT below, and click Source.
 #   The QC app (app_scripts/) calls the functions in this file directly.
 #
@@ -25,13 +24,18 @@
 #      method(s) chosen in `malignant_method` (copyKAT and/or inferCNV for now; see
 #      MALIGNANT_METHODS to add one), using the sample's own immune + stromal cells
 #      as the normal reference
-#   5. saves <sample>_annotated.rds (raw counts untouched; labels in the metadata),
-#      a per-cell label table, and diagnostic plots
+#   5. writes the results into the QC output folder, per sample:
+#        <dataset>/<sample>/<sample>.rds        the labels are added to the QC'd object (raw counts untouched)
+#        <dataset>/<sample>/<sample>_cells.csv  the label columns are added to the per-cell table
+#        <dataset>/<sample>/annotation/         diagnostic plots
+#      and the settings used (annot_* columns of samplesheet.csv), the labels in summary.csv, and log.txt.
+#      copyKAT / inferCNV working files go in working_files/<dataset>/<sample>/ (safe to delete).
 #
-# Interrupted runs: <sample>_annotated.rds is first saved right after step 3, before the
-# slow malignant-cell step, and each method's result is cached in cnv/. With
+# Interrupted runs: the labels are saved into <sample>.rds right after step 3, before the
+# slow malignant-cell step, and each method's result is cached in working_files/. With
 # reuse_previous = TRUE, a rerun with the same cells and settings picks up those labels
-# and cached results instead of computing them again.
+# and cached results instead of computing them again. Running the QC script (or saving from
+# the QC app) on a sample again removes its annotation: annotate it again afterwards.
 #
 # By data type
 #   scRNA-seq  everything above.
@@ -54,8 +58,7 @@
 ## Settings (used when no command-line arguments are given)
 ## =============================================================================
 # Relative to the repo root (where "bladder cancer.Rproj" is).
-INPUT   <- "datasets/GSE130001/qc_output"   # <- folder of *_qc.rds files, or a .csv listing them
-OUT_DIR <- NULL                             # NULL = "<input folder>/annotation"
+INPUT <- "datasets/GSE130001/qc_output"   # <- the QC output folder (or its samplesheet.csv)
 
 PARAMS <- list(
   # labelling methods
@@ -222,13 +225,13 @@ suppressPackageStartupMessages({
 })
 
 ## =============================================================================
-## Logging: console + <out_dir>/annotation_log.txt
+## Logging: console + <QC output folder>/log.txt (added to, never wiped)
 ## =============================================================================
 .an_log <- new.env()
-start_log <- function(out_dir) {
-  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  .an_log$file <- file.path(normalizePath(out_dir, winslash = "/"), "annotation_log.txt")   # absolute: copyKAT changes the working directory
-  cat("", file = .an_log$file)
+start_log <- function(out_dir, what = "") {
+  .an_log$file <- file.path(normalizePath(out_dir, winslash = "/"), "log.txt")   # absolute: copyKAT changes the working directory
+  cat(sprintf("\n==== %s  annotate_cells.R %s ====\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), what),
+      file = .an_log$file, append = TRUE)
 }
 log_msg <- function(...) {
   line <- sprintf("[%s] %s", format(Sys.time(), "%H:%M:%S"), sprintf(...))
@@ -281,36 +284,72 @@ check_packages <- function(params) {
     if (params$marker_list_mode == "replace" && is.na(params$custom_markers))
       stop("marker_list_mode = 'replace' needs a custom_markers file")
   }
-  if (!is.na(params$infercnv_gene_order) && !file.exists(repo_path(params$infercnv_gene_order)))
+  if ("infercnv" %in% methods && !is.na(params$infercnv_gene_order) && !file.exists(repo_path(params$infercnv_gene_order)))
     path_not_found("infercnv_gene_order", params$infercnv_gene_order)
 }
 
-# One row per sample: sample_id, dataset, path, patient
+# The samples of a QC output folder (the folder or its samplesheet.csv): one row per sample with
+# sample_id, dataset, path (its <sample>.rds), patient and the sheet's annot_* columns.
+# Without a samplesheet.csv, every <dataset>/<sample>/<sample>.rds in the folder.
 list_inputs <- function(input) {
-  if (dir.exists(input)) {
-    f <- list.files(input, pattern = "_qc\\.rds$", recursive = TRUE, full.names = TRUE)
-    if (!length(f)) stop("No *_qc.rds files under ", input)
-    return(data.frame(sample_id = sub("_qc\\.rds$", "", basename(f)), dataset = basename(dirname(f)),
-                      path = normalizePath(f, winslash = "/"), patient = NA_character_, stringsAsFactors = FALSE))
-  }
   if (!file.exists(input)) stop("Input not found: ", input, "\n(current working directory: ", getwd(), ")")
-  sheet <- read.csv(input, colClasses = "character", na.strings = c("", "NA"), check.names = FALSE, strip.white = TRUE)
-  names(sheet) <- tolower(trimws(names(sheet)))
-  if (!"path" %in% names(sheet)) stop("The input .csv needs a `path` column")
-  sheet <- sheet[!is.na(sheet$path), , drop = FALSE]
-  sheet_dir <- dirname(normalizePath(input, winslash = "/"))
-  p <- gsub("\\\\", "/", sheet$path)
-  rel <- !grepl("^([A-Za-z]:|/|~)", p)
-  p[rel] <- file.path(sheet_dir, p[rel])
-  p <- normalizePath(p, winslash = "/", mustWork = FALSE)
-  missing <- p[!file.exists(p)]
-  if (length(missing)) stop("Files not found:\n  - ", paste(missing, collapse = "\n  - "))
-  col_or <- function(nm, default) if (nm %in% names(sheet)) ifelse(is.na(sheet[[nm]]), default, sheet[[nm]]) else default
-  data.frame(sample_id = col_or("sample_id", sub("(_qc)?\\.rds$", "", basename(p))),
-             dataset   = col_or("dataset", basename(dirname(p))),
-             path      = p,
-             patient   = col_or(if ("patient_id" %in% names(sheet)) "patient_id" else "patient", NA_character_),
-             stringsAsFactors = FALSE)
+  out_dir <- normalizePath(if (dir.exists(input)) input else dirname(input), winslash = "/")
+  sheet_file <- if (dir.exists(input)) file.path(out_dir, "samplesheet.csv") else input
+  if (file.exists(sheet_file)) {
+    sh <- read.csv(sheet_file, colClasses = "character", na.strings = c("", "NA"), check.names = FALSE, strip.white = TRUE)
+    names(sh) <- tolower(trimws(names(sh)))
+    if (!"sample_id" %in% names(sh)) stop(sheet_file, " has no sample_id column")
+    sh <- sh[!is.na(sh$sample_id), , drop = FALSE]
+    if (!"dataset" %in% names(sh)) sh$dataset <- NA_character_
+    sh$dataset[is.na(sh$dataset)] <- "dataset1"
+  } else {
+    f <- Sys.glob(file.path(out_dir, "*", "*", "*.rds"))
+    f <- f[basename(f) == paste0(basename(dirname(f)), ".rds")]
+    sh <- data.frame(sample_id = basename(dirname(f)), dataset = basename(dirname(dirname(f))), stringsAsFactors = FALSE)
+  }
+  pc <- intersect(c("patient", "patient_id"), names(sh))
+  out <- data.frame(sample_id = sh$sample_id, dataset = sh$dataset,
+                    path = file.path(out_dir, sh$dataset, sh$sample_id, paste0(sh$sample_id, ".rds")),
+                    patient = if (length(pc)) sh[[pc[1]]] else NA_character_, stringsAsFactors = FALSE)
+  for (cl in grep("^annot_", names(sh), value = TRUE)) out[[cl]] <- sh[[cl]]
+  missing <- !file.exists(out$path)
+  if (all(missing)) stop("No QC'd samples in ", out_dir, " (looked for <dataset>/<sample>/<sample>.rds",
+                         if (file.exists(sheet_file)) " for the samples in samplesheet.csv", "). Run the QC script or the QC app first.")
+  if (any(missing)) log_msg("Not QC'd yet, skipped: %s", paste(out$sample_id[missing], collapse = ", "))
+  structure(out[!missing, , drop = FALSE], out_dir = out_dir, sheet = if (file.exists(sheet_file)) sheet_file)
+}
+
+# One sample's settings: `params` with the sample sheet's annot_<name> columns on top.
+# Several values (label_methods, references) are separated by ";"; "none" = an empty list.
+MULTI_VALUE_PARAMS <- c("label_methods", "references")
+row_params <- function(row, params = PARAMS) {
+  problems <- character(0)
+  for (nm in names(PARAMS)) {
+    col <- paste0("annot_", nm)
+    if (!col %in% names(row)) next
+    v <- as.character(row[[col]])
+    if (!length(v) || is.na(v) || !nzchar(trimws(v))) next
+    v <- trimws(v); d <- PARAMS[[nm]]
+    val <- if (nm %in% MULTI_VALUE_PARAMS || length(d) > 1) {
+      if (tolower(v) == "none") character(0) else trimws(strsplit(v, ";", fixed = TRUE)[[1]])
+    } else if (is.logical(d) && !is.na(d)) {
+      if (toupper(v) %in% c("TRUE", "T", "YES", "Y", "1")) TRUE else if (toupper(v) %in% c("FALSE", "F", "NO", "N", "0")) FALSE else NA
+    } else if (is.numeric(d)) suppressWarnings(as.numeric(v)) else v
+    if (length(val) == 1 && is.na(val)) { problems <- c(problems, sprintf("[%s] %s: can't read '%s'", row$sample_id, col, v)); next }
+    params[[nm]] <- val
+  }
+  list(params = params, problems = problems)
+}
+
+# The settings as samplesheet.csv columns (annot_<name>), the way row_params() reads them back
+annot_sheet_values <- function(params) {
+  vals <- lapply(names(PARAMS), function(nm) {
+    v <- params[[nm]]
+    if (nm %in% MULTI_VALUE_PARAMS && !length(v)) return("none")
+    if (is.null(v) || !length(v) || all(is.na(v))) return(NA_character_)
+    paste(v, collapse = ";")
+  })
+  setNames(vals, paste0("annot_", names(PARAMS)))
 }
 
 bp_param <- function(n) {
@@ -772,11 +811,12 @@ labels_key <- function(s, refs, params) list(
   custom_mtime = if (!is.na(params$custom_reference)) as.numeric(file.mtime(repo_path(params$custom_reference))) else NA_real_,
   markers = if ("markers" %in% label_methods(params)) unclass(load_markers(params)))
 
-# A labelled object saved earlier (by this script before its malignant-cell step, or a finished
-# <sample>_annotated.rds), if its labels came from the same cells and settings; else NULL
-read_checkpoint <- function(path, key) {
-  if (is.null(path) || !file.exists(path)) return(NULL)
-  obj <- tryCatch(readRDS(path), error = function(e) NULL)
+# A labelled object saved earlier (by this script before its malignant-cell step, or when it
+# finished), if its labels came from the same cells and settings; else NULL. obj: the object
+# already read from `path`, if it was
+read_checkpoint <- function(path, key, obj = NULL) {
+  if (is.null(obj) && (is.null(path) || !file.exists(path))) return(NULL)
+  if (is.null(obj)) obj <- tryCatch(readRDS(path), error = function(e) NULL)
   if (!inherits(obj, "Seurat") || !identical(obj@misc$annotation$labels_key, key)) return(NULL)
   obj
 }
@@ -838,14 +878,17 @@ label_sample <- function(s, refs, row, params) {
 
 # One sample, start to finish.
 # row: data.frame with sample_id, dataset, path, patient (or an `obj` list-column holding a Seurat object)
-# checkpoint: optional .rds path. The labelled object (steps 1-3) is saved there before the slow
-#   malignant-cell step, so an interrupted run keeps its labels; with reuse_previous = TRUE a
-#   labelled object already there (same cells and settings) is used instead of running SingleR again.
+# checkpoint: optional .rds path (main() uses the sample's own <sample>.rds). The labelled object
+#   (steps 1-3) is saved there before the slow malignant-cell step, so an interrupted run keeps its
+#   labels; with reuse_previous = TRUE a labelled object already there (same cells and settings)
+#   is used instead of labelling again.
 annotate_one_sample <- function(row, refs, params, work_dir = tempdir(), checkpoint = NULL) {
   set.seed(params$seed)
   s <- load_sample(row, params)
   key <- labels_key(s, refs, params)
-  obj <- if (isTRUE(params$reuse_previous)) read_checkpoint(checkpoint, key) else NULL
+  same_file <- !is.null(checkpoint) && !is.null(row$path) &&
+    identical(normalizePath(checkpoint, winslash = "/", mustWork = FALSE), normalizePath(row$path, winslash = "/", mustWork = FALSE))
+  obj <- if (isTRUE(params$reuse_previous)) read_checkpoint(checkpoint, key, if (same_file) s$obj) else NULL
   fresh <- is.null(obj)
   if (!fresh) {
     log_msg("[%s] reusing the labels and clusters saved in %s (same cells and settings)", row$sample_id, checkpoint)
@@ -853,6 +896,7 @@ annotate_one_sample <- function(row, refs, params, work_dir = tempdir(), checkpo
     old <- intersect(malignant_columns(), colnames(obj@meta.data))   # recomputed below with the current settings
     if (length(old)) obj@meta.data[old] <- NULL
   } else {
+    s$obj <- strip_annotation(s$obj)   # labels from an earlier run (other settings) go
     l <- label_sample(s, refs, row, params)
     obj <- l$obj; results <- l$results
     obj@misc$annotation <- list(labels_key = key, singler = results, markers = l$markers, stage = "labels")
@@ -867,7 +911,7 @@ annotate_one_sample <- function(row, refs, params, work_dir = tempdir(), checkpo
   if (fresh && !is.null(checkpoint)) {
     dir.create(dirname(checkpoint), recursive = TRUE, showWarnings = FALSE)
     obj@misc$annotation$stage <- "labels saved"
-    saveRDS(obj, checkpoint)
+    save_rds_safely(drop_scaled(obj), checkpoint)
     if (length(methods))
       log_msg("[%s] labels saved to %s; malignant-cell calling (%s) next", row$sample_id, checkpoint,
               paste(vapply(methods, function(m) MALIGNANT_METHODS[[m]]$label %||% m, ""), collapse = " + "))
@@ -882,7 +926,7 @@ annotate_one_sample <- function(row, refs, params, work_dir = tempdir(), checkpo
 }
 
 ## =============================================================================
-## Outputs
+## Outputs (into the QC output folder)
 ## =============================================================================
 label_columns <- function(obj) intersect(c("sample", "dataset", "patient", "cell_label", "cell_lineage", "cell_label_source", "label_agreement",
   grep("^singler_|^marker_|^sample_cluster$", colnames(obj[[]]), value = TRUE), malignant_columns()), colnames(obj[[]]))
@@ -966,91 +1010,173 @@ plot_cnv <- function(obj) {
   g1 + g2
 }
 
-# Per dataset: stacked bars of the final label's proportions in each sample
-make_dataset_plot <- function(labels, file) {
-  lab <- labels[[final_label_col(labels)]]
-  d <- as.data.frame(table(sample = labels$sample, label = ifelse(is.na(lab), "(unlabelled)", lab)))
-  d <- d[d$Freq > 0, ]
-  p <- ggplot(d, aes(sample, Freq, fill = label)) + geom_col(position = "fill", width = 0.8) +
-    scale_y_continuous(labels = scales::percent) + coord_flip() + theme_bw(base_size = 11) +
-    labs(title = "Cell-type composition per sample (final labels, cell_label)", x = NULL, y = "share of cells", fill = NULL)
-  save_plot(p, file, 10, max(3, 0.35 * length(unique(d$sample)) + 1.5))
+# What an earlier annotation added to an object (stale once the labels are made again)
+ANNOTATION_COLUMN_RX <- "^(singler_|marker_)|^(cell_label|cell_lineage|cell_label_source|label_agreement|sample_cluster|seurat_clusters)$|_snn_res\\."
+annotation_columns <- function(cols) unique(c(grep(ANNOTATION_COLUMN_RX, cols, value = TRUE), intersect(malignant_columns(), cols)))
+strip_annotation <- function(obj) {
+  old <- annotation_columns(colnames(obj@meta.data))
+  if (length(old)) obj@meta.data <- obj@meta.data[setdiff(colnames(obj@meta.data), old)]
+  obj@misc$annotation <- NULL
+  obj@reductions <- list(); obj@graphs <- list()
+  obj
 }
 
-# Parameters used, with every deviation from PARAMS above (for the methods section)
-parameters_used <- function(params, refs) {
-  fmt <- function(v) if (length(v) == 0 || (length(v) == 1 && is.na(v))) "blank" else paste(v, collapse = ";")
-  dev <- character(0)
-  for (nm in names(PARAMS)) if (!identical(fmt(PARAMS[[nm]]), fmt(params[[nm]])))
-    dev <- c(dev, sprintf("%s: default %s -> %s", nm, fmt(PARAMS[[nm]]), fmt(params[[nm]])))
-  used <- data.frame(parameter = names(params), value = vapply(params, fmt, ""),
-                     default = vapply(names(params), function(nm) fmt(PARAMS[[nm]]), ""), stringsAsFactors = FALSE)
-  used$deviates <- used$value != used$default
-  rbind(used,
-        if (length(refs)) data.frame(parameter = paste0("reference_", names(refs)), value = vapply(refs, `[[`, "", "source"), default = "", deviates = FALSE),
-        if ("markers" %in% label_methods(params))
-          data.frame(parameter = "marker_list", value = attr(load_markers(params), "source"), default = "", deviates = FALSE),
-        data.frame(parameter = c("SingleR_version", "Seurat_version"),
-                   value = c(tryCatch(as.character(packageVersion("SingleR")), error = function(e) "not installed"),
-                             as.character(packageVersion("Seurat"))), default = "", deviates = FALSE))
+# The scaled data made for clustering is large and not needed afterwards: not saved
+drop_scaled <- function(obj) {
+  for (a in names(obj@assays)) obj <- tryCatch({
+    x <- obj[[a]]
+    if (inherits(x, "Assay5")) { if ("scale.data" %in% SeuratObject::Layers(x)) { x$scale.data <- NULL; obj[[a]] <- x } }
+    else if (length(x@scale.data)) { x@scale.data <- matrix(numeric(0), 0, 0); obj[[a]] <- x }
+    obj
+  }, error = function(e) obj)
+  obj
+}
+
+# Write to a temporary file first, so an interruption can't leave a half-written <sample>.rds
+save_rds_safely <- function(obj, f) {
+  tmp <- paste0(f, ".part")
+  saveRDS(obj, tmp)
+  if (file.exists(f)) file.remove(f)
+  if (!file.rename(tmp, f)) stop("could not replace ", f, " (the new version is in ", tmp, ")")
+  invisible(f)
+}
+
+# Replace one sample's row in a CSV, or change some of its columns (same as in the QC scripts)
+upsert_csv <- function(file, row, key = "sample_id") {
+  row <- as.data.frame(lapply(row, function(v) if (is.null(v) || !length(v) || is.na(v[1])) NA_character_ else as.character(v[1])),
+                       stringsAsFactors = FALSE, check.names = FALSE)
+  out <- row
+  if (file.exists(file)) {
+    old <- read.csv(file, colClasses = "character", na.strings = "", check.names = FALSE)
+    if (key %in% names(old)) {
+      cols <- union(names(row), names(old))
+      for (cl in setdiff(cols, names(old))) old[[cl]] <- if (nrow(old)) NA_character_ else character(0)
+      for (cl in setdiff(cols, names(row))) row[[cl]] <- NA_character_
+      out <- old[cols]
+      i <- match(row[[key]], out[[key]])
+      if (is.na(i)) out <- rbind(out, row[cols]) else out[i, ] <- row[cols]
+    }
+  }
+  write.csv(out, file, row.names = FALSE, na = "")
+  invisible(file)
+}
+update_csv_row <- function(file, id, values, key = "sample_id") {
+  old <- if (file.exists(file)) read.csv(file, colClasses = "character", na.strings = "", check.names = FALSE)
+  row <- if (!is.null(old) && id %in% old[[key]]) as.list(old[match(id, old[[key]]), , drop = FALSE]) else setNames(list(id), key)
+  for (nm in names(values)) row[[nm]] <- values[[nm]]
+  upsert_csv(file, row, key)
+}
+
+# Short text for summary.csv and the log: the commonest final labels, and the malignant calls
+count_text <- function(x, top = Inf) {
+  t <- sort(table(ifelse(is.na(x), "(unlabelled)", as.character(x))), decreasing = TRUE)
+  out <- paste(sprintf("%s %d", names(t)[seq_len(min(top, length(t)))], t[seq_len(min(top, length(t)))]), collapse = ", ")
+  if (length(t) > top) paste0(out, sprintf(", +%d more", length(t) - top)) else out
+}
+malignant_text <- function(r) {
+  md <- r$obj@meta.data
+  if ("cnv_status" %in% colnames(md)) return(count_text(md$cnv_status))
+  if (!length(r$cnv$methods)) "not run (malignant_method = none)" else paste("skipped:", r$cnv$skipped %||% "no result")
+}
+
+# Everything for one annotated sample, in the QC output folder: the labelled object replaces
+# <sample>.rds, the label columns go into <sample>_cells.csv (or _spots.csv), the plots into
+# annotation/, the settings into samplesheet.csv (annot_* columns), the labels into summary.csv.
+# The QC app calls this too.
+write_annotation_outputs <- function(r, out_dir, params) {
+  sdir <- file.path(out_dir, r$dataset, r$sample_id)
+  dir.create(sdir, recursive = TRUE, showWarnings = FALSE)
+  rds <- file.path(sdir, paste0(r$sample_id, ".rds"))
+  r$obj@misc$annotation$params <- params
+  save_rds_safely(drop_scaled(r$obj), rds)
+
+  # label columns into the per-cell table (cells QC removed get blanks)
+  lab <- r$obj@meta.data[, setdiff(label_columns(r$obj), c("sample", "dataset", "patient")), drop = FALSE]
+  tab_file <- file.path(sdir, paste0(r$sample_id, c("_cells.csv", "_spots.csv")))
+  tab_file <- if (any(file.exists(tab_file))) tab_file[file.exists(tab_file)][1] else
+    file.path(sdir, paste0(r$sample_id, if (identical(r$type, "visium")) "_spots.csv" else "_cells.csv"))
+  tab <- if (file.exists(tab_file)) read.csv(tab_file, check.names = FALSE, stringsAsFactors = FALSE) else data.frame(cell = rownames(lab))
+  tab <- tab[setdiff(names(tab), annotation_columns(names(tab)))]
+  i <- match(tab$cell, rownames(lab))
+  for (cl in names(lab)) tab[[cl]] <- lab[[cl]][i]
+  write.csv(tab, tab_file, row.names = FALSE)
+
+  plot_dir <- file.path(sdir, "annotation")
+  unlink(plot_dir, recursive = TRUE)
+  tryCatch(make_sample_plots(r, plot_dir),
+           error = function(e) log_msg("[%s] WARNING: plotting failed (%s)", r$sample_id, conditionMessage(e)))
+
+  sheet <- file.path(out_dir, "samplesheet.csv")
+  if (file.exists(sheet) && r$sample_id %in% read.csv(sheet, colClasses = "character", check.names = FALSE)$sample_id)
+    update_csv_row(sheet, r$sample_id, annot_sheet_values(params))
+  labels <- r$obj@meta.data[[final_label_col(r$obj@meta.data)]]
+  update_csv_row(file.path(out_dir, "summary.csv"), r$sample_id,
+                 list(dataset = r$dataset, annotated_at = format(Sys.time(), "%Y-%m-%d %H:%M"),
+                      cell_labels = count_text(labels, 8), malignant = malignant_text(r)))
+  log_msg("[%s] annotation saved in %s (labels: %s)", r$sample_id, sdir, count_text(labels, 8))
+  invisible(list(dir = sdir, rds = rds, table = tab_file, plots = plot_dir))
+}
+
+# Settings that differ from PARAMS, as text (for the log)
+param_changes <- function(params) {
+  fmt <- function(v) if (!length(v) || all(is.na(v))) "blank" else paste(v, collapse = ";")
+  nm <- names(PARAMS)[vapply(names(PARAMS), function(n) !identical(fmt(PARAMS[[n]]), fmt(params[[n]])), TRUE)]
+  if (length(nm)) paste(sprintf("%s = %s", nm, vapply(nm, function(n) fmt(params[[n]]), "")), collapse = ", ") else "none"
+}
+
+# References take a while to prepare: once per set of reference settings
+.refs_cache <- new.env()
+references_for <- function(params) {
+  key <- paste(deparse(params[c("label_methods", "label_priority", "references", "label_level", "custom_reference",
+                                "custom_label_col", "custom_max_per_type", "custom_min_per_type", "primary", "seed")]), collapse = "")
+  if (is.null(.refs_cache[[key]])) {
+    refs <- prepare_references(params)
+    log_msg("Labelling: %s%s", paste(label_methods(params), collapse = " > "),
+            if (length(refs)) sprintf("; SingleR references: %s (primary: %s)",
+                                      paste(sprintf("%s [%s]", names(refs), vapply(refs, `[[`, "", "source")), collapse = ", "),
+                                      attr(refs, "primary")) else "")
+    .refs_cache[[key]] <- refs
+  }
+  .refs_cache[[key]]
 }
 
 ## =============================================================================
 ## main(): the whole pipeline, in order
 ## =============================================================================
-main <- function(input = INPUT, out_dir = OUT_DIR, params = PARAMS) {
-  base <- if (dir.exists(input)) input else dirname(input)
-  if (is.null(out_dir)) out_dir <- file.path(base, "annotation")
-  dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  start_log(out_dir)
-
-  check_packages(params)
+main <- function(input = INPUT, params = PARAMS) {
   samples <- list_inputs(input)
-  log_msg("%d sample(s) in %d dataset(s)", nrow(samples), length(unique(samples$dataset)))
-  refs <- prepare_references(params)
-  log_msg("Labelling: %s%s", paste(label_methods(params), collapse = " > "),
-          if ("SingleR" %in% label_methods(params)) sprintf("; primary SingleR reference: %s", attr(refs, "primary")) else "")
-  write.csv(parameters_used(params, refs), file.path(out_dir, "annotation_params.csv"), row.names = FALSE)
+  out_dir <- attr(samples, "out_dir")
+  start_log(out_dir, input)
+  log_msg("%d sample(s) in %d dataset(s); Seurat %s, SingleR %s", nrow(samples), length(unique(samples$dataset)),
+          as.character(packageVersion("Seurat")), tryCatch(as.character(packageVersion("SingleR")), error = function(e) "not installed"))
 
-  all_labels <- list(); failures <- list()
+  # Each sample's settings (PARAMS + its annot_* columns); check them all before starting
+  rp <- lapply(seq_len(nrow(samples)), function(i) row_params(samples[i, , drop = FALSE], params))
+  problems <- unlist(lapply(rp, `[[`, "problems"))
+  if (length(problems)) stop(paste(c("Sample sheet problems (nothing was run):", problems), collapse = "\n  - "))
+  for (p in unique(lapply(rp, `[[`, "params"))) check_packages(p)
+
+  ok <- character(0); failures <- list()
   for (i in seq_len(nrow(samples))) {
-    row <- samples[i, ]
-    ds_dir <- file.path(out_dir, row$dataset)
-    f <- file.path(ds_dir, paste0(row$sample_id, "_annotated.rds"))
-    ok <- tryCatch({
-      # f doubles as the checkpoint: labels are saved there before the malignant-cell step
-      r <- annotate_one_sample(row, refs, params, work_dir = file.path(ds_dir, "cnv"), checkpoint = f)
-      dir.create(ds_dir, recursive = TRUE, showWarnings = FALSE)
-      saveRDS(r$obj, f)
-      log_msg("[%s] saved %s", row$sample_id, f)
-      tryCatch(make_sample_plots(r, file.path(ds_dir, "plots", row$sample_id)),
-               error = function(e) log_msg("[%s] WARNING: plotting failed (%s)", row$sample_id, conditionMessage(e)))
-      lab <- r$obj[[]][, label_columns(r$obj), drop = FALSE]
-      all_labels[[row$sample_id]] <- cbind(cell = rownames(lab), lab)
+    row <- samples[i, , drop = FALSE]; p <- rp[[i]]$params
+    log_msg("[%s] settings changed from PARAMS: %s", row$sample_id, param_changes(p))
+    res <- tryCatch({
+      refs <- references_for(p)
+      # <sample>.rds doubles as the checkpoint: the labels are saved there before the malignant-cell step
+      r <- annotate_one_sample(row, refs, p, work_dir = file.path(out_dir, "working_files", row$dataset, row$sample_id),
+                               checkpoint = row$path)
+      write_annotation_outputs(r, out_dir, p)
       TRUE
     }, error = function(e) { log_msg("[%s] FAILED: %s", row$sample_id, conditionMessage(e)); conditionMessage(e) })
-    if (!isTRUE(ok)) failures[[row$sample_id]] <- ok
-    gc(verbose = FALSE)
-  }
-
-  if (length(all_labels)) {
-    cols <- unique(unlist(lapply(all_labels, names)))
-    fill <- function(d) { for (cl in setdiff(cols, names(d))) d[[cl]] <- NA; d[cols] }
-    labels <- do.call(rbind, lapply(all_labels, fill)); rownames(labels) <- NULL
-    for (ds in unique(labels$dataset)) {
-      d <- labels[labels$dataset == ds, ]
-      write.csv(d, file.path(out_dir, ds, "cell_labels.csv"), row.names = FALSE)
-      tryCatch(make_dataset_plot(d, file.path(out_dir, ds, "label_composition.png")),
-               error = function(e) log_msg("[%s] WARNING: composition plot failed (%s)", ds, conditionMessage(e)))
+    if (isTRUE(res)) ok <- c(ok, row$sample_id) else {
+      failures[[row$sample_id]] <- res
+      update_csv_row(file.path(out_dir, "summary.csv"), row$sample_id,
+                     list(annotated_at = paste("failed", format(Sys.time(), "%Y-%m-%d %H:%M")), cell_labels = res))
     }
-    final <- labels[[final_label_col(labels)]]
-    counts <- as.data.frame.matrix(table(paste(labels$dataset, labels$sample, sep = "/"), ifelse(is.na(final), "(unlabelled)", final)))
-    write.csv(cbind(sample = rownames(counts), counts), file.path(out_dir, "label_counts.csv"), row.names = FALSE)
+    r <- NULL; gc(verbose = FALSE)
   }
-  if (length(failures)) write.csv(data.frame(sample = names(failures), error = unlist(failures)),
-                                  file.path(out_dir, "failed_samples.csv"), row.names = FALSE)
-  log_msg("Done: %d sample(s) annotated, %d failed. Outputs in %s", length(all_labels), length(failures), out_dir)
-  invisible(list(out_dir = out_dir, failures = failures))
+  log_msg("Done: %d sample(s) annotated, %d failed. Outputs in %s", length(ok), length(failures), out_dir)
+  invisible(list(out_dir = out_dir, ok = ok, failures = failures))
 }
 
 ## =============================================================================
@@ -1060,6 +1186,5 @@ main <- function(input = INPUT, out_dir = OUT_DIR, params = PARAMS) {
 .script_path <- local({ f <- sub("^--file=", "", grep("^--file=", commandArgs(FALSE), value = TRUE))
                         if (length(f)) normalizePath(f[1], winslash = "/") })
 args <- commandArgs(trailingOnly = TRUE)
-run <- main(input   = if (length(args) >= 1) args[1] else INPUT,
-            out_dir = if (length(args) >= 2) args[2] else OUT_DIR)
+run <- main(input = if (length(args) >= 1) args[1] else INPUT)
 if (length(run$failures) && !interactive()) quit(status = 1)

@@ -32,10 +32,10 @@ qc_script_path <- function(modality) {
 # Source a script's definitions without running it: every top-level expression
 # is evaluated except the ones that read command-line arguments, call main(),
 # or quit R (the "Run" block at the bottom).
-QC_FUNCTIONS <- c("DEFAULTS", "resolve_sample", "load_sample", "compute_qc_metrics", "compute_thresholds",
-                  "save_sample", "summarise_sample", "make_plots")
+QC_FUNCTIONS <- c("DEFAULTS", "CUTOFFS", "resolve_sample", "load_sample", "compute_qc_metrics", "compute_thresholds",
+                  "save_sample", "summarise_sample", "make_plots", "write_sample_outputs")
 ANNOTATION_FUNCTIONS <- c("PARAMS", "REFERENCES", "check_packages", "prepare_references", "annotate_one_sample",
-                          "make_sample_plots", "label_columns", "parameters_used")
+                          "make_sample_plots", "label_columns", "row_params", "write_annotation_outputs")
 
 source_definitions <- function(path, required = QC_FUNCTIONS, defaults_block = "DEFAULTS") {
   if (!file.exists(path)) stop("QC script not found: ", path)
@@ -141,6 +141,23 @@ MODALITIES <- list(
 live_params <- function(modality) MODALITIES[[modality]]$groups[["Automatic (MAD) cutoff rules"]]
 load_params <- function(modality) unlist(MODALITIES[[modality]]$groups[c("Reading the data", LOAD_QC_GROUP)], use.names = FALSE)
 
+## ---- sample-sheet rows --------------------------------------------------------------------
+# A row of a sample sheet sets that sample's own rules. Its QC settings stay with the sample (the
+# Advanced settings don't change them; attr(p, "row_set") lists them), its cutoff_<name> columns
+# become the starting positions of its sliders (set by hand), and any other column (patient,
+# notes, annot_* annotation settings) goes back into samplesheet.csv when it is saved.
+sheet_set_params <- function(env, row) {
+  nms <- setdiff(intersect(names(env$DEFAULTS), names(row)), "dataset")
+  nms[vapply(nms, function(nm) { v <- row[[nm]]; length(v) == 1 && !is.na(v) && nzchar(trimws(as.character(v))) }, TRUE)]
+}
+# Split the script's resolved parameters: the cutoff_* values come out (they go to the sliders)
+take_cutoffs <- function(env, p) {
+  cols <- intersect(paste0("cutoff_", env$CUTOFFS), names(p))
+  cut <- setNames(lapply(cols, function(cl) p[[cl]]), sub("^cutoff_", "", cols))
+  p[cols] <- NULL
+  list(p = p, cutoffs = cut)
+}
+
 # .h5ad files: the scripts' resolve_sample() doesn't know the format, so it checks the row as
 # if it were an .rds (same path checks) and the app then reads it itself (R/h5ad.R)
 is_h5ad <- function(path) grepl("\\.h5ad$", path %||% "", ignore.case = TRUE)
@@ -225,14 +242,17 @@ QC_MARKER_COLS    <- c("qc_reason", "scDblFinder.score", "scDblFinder.class", "d
 ANNOT_MARKER_COLS <- c("cell_label", "singler_label", "cnv_status", "cell_type", "celltypist_majority_voting", "majority_voting")
 
 describe_input <- function(modality, path, prior_cols, raw = NULL, assays = character(0)) {
-  qc_file <- grepl("_(qc|annotated)\\.(rds|h5ad)$", basename(path %||% ""), ignore.case = TRUE)
+  # saved by the QC scripts / app: <sample>/<sample>.rds next to <sample>_cells.csv (or older: <sample>_qc.rds)
+  qc_file <- grepl("_(qc|annotated)\\.(rds|h5ad)$", basename(path %||% ""), ignore.case = TRUE) ||
+    (grepl("\\.rds$", path %||% "", ignore.case = TRUE) &&
+       any(file.exists(paste0(sub("\\.rds$", "", path, ignore.case = TRUE), c("_cells.csv", "_spots.csv")))))
   qc_cols <- intersect(QC_MARKER_COLS, prior_cols)
   an_cols <- intersect(ANNOT_MARKER_COLS, prior_cols)
   if (length(an_cols))
     return(list(kind = "annotated", short = "already annotated",
                 text = sprintf("already QC'd and annotated (has %s)", paste(an_cols, collapse = ", "))))
   if (qc_file || length(qc_cols) || "decontX" %in% assays) {
-    why <- c(if (qc_file) sprintf("file name %s", basename(path)), if (length(qc_cols)) sprintf("has %s", paste(qc_cols, collapse = ", ")),
+    why <- c(if (qc_file) sprintf("%s was saved by the QC scripts or app", basename(path)), if (length(qc_cols)) sprintf("has %s", paste(qc_cols, collapse = ", ")),
              if ("decontX" %in% assays) "has a decontX assay")
     return(list(kind = "qc", short = "already QC'd", text = sprintf("already QC'd (%s)", paste(why, collapse = "; "))))
   }
@@ -335,8 +355,15 @@ add_doublet_columns <- function(th, meta, threshold) {
   th
 }
 
-# The result object each script's save_sample()/summarise_sample() expects
-result_object <- function(modality, d, meta, th, p, extra = NULL) {
+# The result object each script's save_sample()/summarise_sample() expects.
+# sample_meta: patient etc., added to every cell
+result_object <- function(modality, d, meta, th, p, extra = NULL, sample_meta = list()) {
+  sample_meta <- Filter(function(v) length(v) == 1 && !is.na(v) && nzchar(as.character(v)), sample_meta)
+  r <- result_object_(modality, d, meta, th, p, extra)
+  r$sample_meta <- sample_meta
+  r
+}
+result_object_ <- function(modality, d, meta, th, p, extra = NULL) {
   switch(modality,
     scrna = {
       kept <- meta$cell[meta$keep]

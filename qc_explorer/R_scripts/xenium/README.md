@@ -22,7 +22,7 @@
 ```bash
 # from the repo root
 Rscript R_scripts/xenium/xenium_qc.R datasets/<ID>/samplesheet_xenium.csv
-# -> datasets/<ID>/qc_output/<dataset>/<sample>_qc.rds, tables, plots/
+# -> datasets/<ID>/qc_output/<dataset>/<sample>/<sample>.rds, <sample>_cells.csv, qc/; samplesheet.csv, summary.csv
 ```
 
 In RStudio, set `SAMPLE_SHEET_PATH` at the top of the script and click **Source**. Start the sample sheet from [`samplesheet_template_xenium.csv`](samplesheet_template_xenium.csv). Or use the QC app's **Xenium** mode to set cutoffs by eye.
@@ -72,7 +72,10 @@ Required: `sample_id`, `path`. A blank cell means "use the default". Relative pa
 | `min_cells_gene` | `0` | Keep genes detected in at least this many kept cells. `0` keeps the whole panel. |
 | `seed` | `1234` | For reproducible random steps. |
 
-Extra columns (e.g. `notes`) are ignored, and the log says so.
+| `patient` | blank | Patient ID (or `patient_id`), added to every cell as `patient`. |
+| `cutoff_<name>` | blank | Use this exact cutoff for this sample instead of the rules above, for `min_counts`, `max_counts`, `min_features`, `max_features`, `min_cell_area`, `max_cell_area`, `max_pct_control` (e.g. `cutoff_min_cell_area = 20`; `Inf` = no maximum). The QC app writes these when you set a cutoff by hand. |
+
+Other columns (e.g. `notes`, or `annot_*` settings for `annotate_cells.R`) are copied as they are into the output folder's `samplesheet.csv`. That sheet holds every setting each sample was run with, so giving it back to the script reruns them exactly (into the same folder).
 
 ---
 
@@ -100,20 +103,20 @@ Extra columns (e.g. `notes`) are ignored, and the log says so.
 
 ```
 qc_output/
-├── all_samples_summary.csv     every sample: cells in, removed by reason, kept, status
-├── samplesheet_resolved.csv    the final value of every parameter, per sample
-├── qc_log.txt
-└── <dataset>/
-    ├── <sample_id>_qc.rds      one Seurat object per sample
-    ├── qc_thresholds.csv       the cutoffs actually used, per sample
-    ├── cell_qc_metadata.csv    every cell (kept and removed): metrics + qc_reason
-    └── plots/                  01–04 PNGs, one panel per sample
+├── samplesheet.csv             every sample with every setting used; reusable as the input sheet
+├── summary.csv                 every sample: cells in, removed by reason, kept, cutoffs used, status
+├── log.txt                     each run adds to it
+└── <dataset>/<sample_id>/
+    ├── <sample_id>.rds         one Seurat object per sample
+    ├── <sample_id>_cells.csv   every cell (kept and removed): metrics + qc_reason
+    ├── qc/                     01–04 PNGs
+    └── annotation/             added by annotate_cells.R
 ```
 
-Each `<sample_id>_qc.rds` has:
+Each `<sample_id>.rds` has:
 - an `Xenium` assay with the raw counts of the kept cells
 - an FOV named `fov` with the cell centroids, so `ImageDimPlot()` works
-- metadata: `sample`, `dataset`, `control_counts`, `pct_control`, `cell_area`, `nucleus_area`, `nucleus_ratio`, `x`, `y`
+- metadata: `sample`, `dataset`, `patient` (if given), `control_counts`, `pct_control`, `cell_area`, `nucleus_area`, `nucleus_ratio`, `x`, `y`
 
 For `.rds` input, the original object is subset instead, which keeps its own FOVs.
 

@@ -18,9 +18,13 @@
 #   2. keeps in-tissue spots only
 #   3. computes QC metrics per spot (UMIs, genes, % mito; % ribo and % hemoglobin reported only)
 #   4. removes outlier spots with per-sample MAD thresholds (same method as scrna_qc.R)
-#   5. drops rare genes and saves <sample_id>_qc.rds (raw counts, not normalized)
-# Per dataset folder it also writes summary tables, QC plots, and spatial maps
-# showing WHERE the removed spots are on the tissue.
+#   5. drops rare genes and saves the sample (raw counts, not normalized), with QC plots and
+#      spatial maps showing WHERE the removed spots are on the tissue
+#
+# Output folder (the same layout as scrna_qc.R; see there): samplesheet.csv (every setting
+# used, reusable as the input sheet), summary.csv, log.txt, and per sample
+# <dataset>/<sample_id>/<sample_id>.rds, <sample_id>_spots.csv, qc/ and annotation/.
+# Extra sheet columns: patient, cutoff_<name> (see CUTOFFS), annot_<name>; others are kept.
 #
 # Not done here, on purpose: doublet detection and ambient-RNA correction
 # (a Visium spot is a mixture of cells by design) and normalization (do it
@@ -32,7 +36,8 @@
 ## =============================================================================
 # Relative to the repo root (where "bladder cancer.Rproj" is).
 SAMPLE_SHEET_PATH <- "datasets/VISIUM_DATASET/samplesheet_visium.csv"   # <- change to your dataset
-OUT_DIR           <- NULL   # NULL = "<folder of the sample sheet>/qc_output"
+OUT_DIR           <- NULL   # NULL = "<folder of the sample sheet>/qc_output" (or, for an output folder's own
+                            #        samplesheet.csv, that output folder: the rerun replaces its results)
 
 ## =============================================================================
 ## Defaults for every sample-sheet column
@@ -57,6 +62,10 @@ DEFAULTS <- list(
   min_spots_gene = 3,          # keep genes seen in >= this many of the sample's kept spots
   seed           = 1234
 )
+# Cutoffs a sample-sheet column can fix for one sample: cutoff_<name>, e.g. cutoff_max_mito = 15
+# (Inf = no maximum). Blank = the MAD rule above. The QC app fills these in when you set a cutoff
+# by hand, so its samplesheet.csv gives the same cutoffs here.
+CUTOFFS <- c("min_counts", "max_counts", "min_features", "max_features", "max_mito")
 LOGICAL_PARAMS   <- character(0)
 CHARACTER_PARAMS <- c("dataset", "format", "mito_pattern")
 NUMERIC_PARAMS   <- setdiff(names(DEFAULTS), c(LOGICAL_PARAMS, CHARACTER_PARAMS))
@@ -79,13 +88,15 @@ suppressPackageStartupMessages({
 })
 
 ## =============================================================================
-## Logging: every message goes to the console and to <out_dir>/qc_log.txt
+## Logging: every message goes to the console and to <out_dir>/log.txt (added to, never wiped)
 ## =============================================================================
 .qc_log <- new.env()
+if (!exists("%||%")) `%||%` <- function(a, b) if (is.null(a)) b else a
 
-start_log <- function(out_dir) {
-  .qc_log$file <- file.path(out_dir, "qc_log.txt")
-  cat("", file = .qc_log$file)
+start_log <- function(out_dir, what = "") {
+  .qc_log$file <- file.path(normalizePath(out_dir, winslash = "/"), "log.txt")
+  cat(sprintf("\n==== %s  visium_qc.R %s ====\n", format(Sys.time(), "%Y-%m-%d %H:%M:%S"), what),
+      file = .qc_log$file, append = TRUE)
 }
 
 log_msg <- function(...) {
@@ -113,6 +124,24 @@ guess_format <- function(p) {
   NA_character_
 }
 
+# The sheet columns that aren't QC parameters: fixed cutoffs (cutoff_<name>), the patient,
+# and any other column (kept as is, e.g. notes or annot_* settings for annotate_cells.R)
+sheet_extras <- function(row, sid, add) {
+  out <- list()
+  for (nm in CUTOFFS) {
+    col <- paste0("cutoff_", nm)
+    if (!col %in% names(row) || is.na(row[[col]])) next
+    v <- suppressWarnings(as.numeric(row[[col]]))
+    if (is.na(v)) add("[%s] %s must be a number (Inf = no maximum), got '%s'", sid, col, row[[col]]) else out[[col]] <- v
+  }
+  pc <- intersect(c("patient", "patient_id"), names(row))
+  out$patient <- if (length(pc) && !is.na(row[[pc[1]]])) as.character(row[[pc[1]]]) else NA_character_
+  other <- setdiff(names(row), c("sample_id", "path", "patient", "patient_id", names(DEFAULTS), paste0("cutoff_", CUTOFFS)))
+  out$extra_columns <- lapply(setNames(other, other), function(nm) as.character(row[[nm]]))
+  out
+}
+fixed_cutoffs <- function(p) CUTOFFS[vapply(CUTOFFS, function(nm) { v <- p[[paste0("cutoff_", nm)]]; length(v) == 1 && !is.na(v) }, TRUE)]
+
 # Turn one sheet row into a full parameter list. Returns list(params, problems).
 resolve_sample <- function(row, i, sheet_dir) {
   problems <- character(0)
@@ -133,6 +162,7 @@ resolve_sample <- function(row, i, sheet_dir) {
   if (is.na(sid)) add("Row %d has no sample_id", i)
   p$sample_id <- sid
   p$path      <- resolve_path(row$path, sheet_dir)
+  p <- c(p, sheet_extras(row, sid, add))
 
   if (is.na(p$path) || !file.exists(p$path)) {
     add("[%s] path not found: %s", sid, row$path)
@@ -159,8 +189,8 @@ read_sample_sheet <- function(sample_sheet_path, sheet_dir) {
   missing_cols <- setdiff(c("sample_id", "path"), names(sheet))
   if (length(missing_cols)) stop("Sample sheet is missing required column(s): ", paste(missing_cols, collapse = ", "))
 
-  ignored_cols <- setdiff(names(sheet), c("sample_id", "path", names(DEFAULTS)))
-  if (length(ignored_cols)) log_msg("Ignoring extra column(s): %s", paste(ignored_cols, collapse = ", "))
+  other_cols <- setdiff(names(sheet), c("sample_id", "path", "patient", "patient_id", names(DEFAULTS), paste0("cutoff_", CUTOFFS)))
+  if (length(other_cols)) log_msg("Not QC settings, copied as they are to samplesheet.csv: %s", paste(other_cols, collapse = ", "))
 
   problems <- character(0)
   dups <- unique(sheet$sample_id[duplicated(sheet$sample_id)])
@@ -173,14 +203,6 @@ read_sample_sheet <- function(sample_sheet_path, sheet_dir) {
   samples <- lapply(resolved, `[[`, "params")
   names(samples) <- vapply(samples, function(p) p$sample_id, "")
   samples
-}
-
-write_resolved_params <- function(samples, out_dir) {
-  resolved <- do.call(rbind, lapply(samples, function(p) as.data.frame(
-    p[c("sample_id", "path", names(DEFAULTS))], stringsAsFactors = FALSE)))
-  write.csv(resolved, file.path(out_dir, "samplesheet_resolved.csv"), row.names = FALSE)
-  log_msg("Sample sheet OK: %d sample(s) in %d dataset(s). Resolved parameters -> samplesheet_resolved.csv",
-          length(samples), length(unique(resolved$dataset)))
 }
 
 ## =============================================================================
@@ -336,7 +358,7 @@ compute_thresholds <- function(md, p, n_mito_genes) {
   lc <- mad_bounds(log10(pmax(md$nCount_Spatial, 1)),   p$nmads_low, p$nmads_high)
   lf <- mad_bounds(log10(pmax(md$nFeature_Spatial, 1)), p$nmads_low, p$nmads_high)
   mt_mad <- median(md$percent.mt) + p$nmads_mito * mad(md$percent.mt)
-  data.frame(sample = p$sample_id, dataset = p$dataset, spots_in = nrow(md),
+  th <- data.frame(sample = p$sample_id, dataset = p$dataset, spots_in = nrow(md),
              min_counts   = max(p$min_counts,   floor(10^lc[["low"]])),
              max_counts   = min(na_inf(p$max_counts),   ceiling(10^lc[["high"]])),
              min_features = max(p$min_features, floor(10^lf[["low"]])),
@@ -345,6 +367,13 @@ compute_thresholds <- function(md, p, n_mito_genes) {
              max_mito     = round(min(max(mt_mad, p$mito_floor), p$mito_ceiling), 2),
              median_counts = median(md$nCount_Spatial), median_features = median(md$nFeature_Spatial),
              median_mito = round(median(md$percent.mt), 2), n_mito_genes = n_mito_genes)
+  fix_cutoffs(th, p)
+}
+
+# Cutoffs fixed in the sample sheet (cutoff_<name> columns) replace the MAD ones
+fix_cutoffs <- function(th, p) {
+  for (nm in fixed_cutoffs(p)) th[[nm]] <- p[[paste0("cutoff_", nm)]]
+  th
 }
 
 # Step 4b: flag spots outside the cutoffs; returns the metadata with qc_reason and keep
@@ -376,15 +405,15 @@ qc_one_sample <- function(p) {
   md$x <- xy$x; md$y <- xy$y
   md$cell <- rownames(md)
   list(sample_id = p$sample_id, dataset = p$dataset, obj = obj, meta = md, thresholds = th,
-       min_spots_gene = p$min_spots_gene)
+       min_spots_gene = p$min_spots_gene, sample_meta = list(patient = p$patient))
 }
 
 ## =============================================================================
 ## Outputs
 ## =============================================================================
 # Step 5: drop rare genes and save the kept spots (with the image) for this sample
-save_sample <- function(r, ds_dir) {
-  dir.create(ds_dir, recursive = TRUE, showWarnings = FALSE)
+save_sample <- function(r, sdir) {
+  dir.create(sdir, recursive = TRUE, showWarnings = FALSE)
   kept <- r$meta$cell[r$meta$keep]
   sub <- subset(r$obj, cells = kept)
   m <- LayerData(sub, assay = "Spatial", layer = "counts")
@@ -392,9 +421,11 @@ save_sample <- function(r, ds_dir) {
   sub <- subset(sub, features = genes_keep)
   sub$qc_reason <- NULL
   Idents(sub) <- "sample"
-  f <- file.path(ds_dir, paste0(r$sample_id, "_qc.rds"))
+  for (nm in names(r$sample_meta)) if (!is.na(r$sample_meta[[nm]])) sub@meta.data[[nm]] <- r$sample_meta[[nm]]   # patient, ...
+  f <- file.path(sdir, paste0(r$sample_id, ".rds"))
   saveRDS(sub, f)
   log_msg("[%s] saved %s: %d spots, %d genes (in >= %d spots)", r$sample_id, f, ncol(sub), nrow(sub), r$min_spots_gene)
+  invisible(f)
 }
 
 summarise_sample <- function(r) {
@@ -416,7 +447,7 @@ spatial_panels <- function(meta, fill_fun, title) {
   wrap_plots(plots, ncol = min(length(plots), 3)) + plot_annotation(title = title)
 }
 
-make_plots <- function(meta, thresholds, plot_dir) {
+make_plots <- function(meta, thresholds, plot_dir, extra_dir = NULL) {   # extra_dir: unused (no doublet / ambient steps)
   dir.create(plot_dir, recursive = TRUE, showWarnings = FALSE)
   theme_set(theme_bw(base_size = 11))
   ns <- length(unique(meta$sample)); nc <- min(ns, 3); nr <- ceiling(ns / nc)
@@ -466,71 +497,157 @@ make_plots <- function(meta, thresholds, plot_dir) {
   ggsave(file.path(plot_dir, "05_spatial_mito.png"), p5, width = 4.5 * nc + 1.5, height = 4.2 * nr + 0.6, dpi = 150, limitsize = FALSE)
 }
 
-write_dataset_outputs <- function(rs, ds_dir) {
-  dir.create(ds_dir, recursive = TRUE, showWarnings = FALSE)
-  keep_cols <- c("cell", "sample", "dataset", "nCount_Spatial", "nFeature_Spatial", "percent.mt", "percent.ribo",
-                 "percent.hb", "array_row", "array_col", "pxl_row", "pxl_col", "x", "y", "qc_reason", "keep")
-  meta_all <- do.call(rbind, lapply(rs, function(r) r$meta[, intersect(keep_cols, names(r$meta))]))
-  th_all   <- do.call(rbind, lapply(rs, `[[`, "thresholds"))
-  sm       <- do.call(rbind, lapply(rs, summarise_sample))
-  write.csv(th_all,   file.path(ds_dir, "qc_thresholds.csv"), row.names = FALSE)
-  write.csv(meta_all, file.path(ds_dir, "spot_qc_metadata.csv"), row.names = FALSE)
-  tryCatch(make_plots(meta_all, th_all, file.path(ds_dir, "plots")),
-           error = function(e) log_msg("[%s] WARNING: plotting failed (%s)", basename(ds_dir), conditionMessage(e)))
-  sm
+SCRIPT_NAME   <- "visium_qc.R"
+UNIT_FILE     <- "spots"     # <sample>_spots.csv
+SUMMARY_PRINT <- c("dataset", "sample_id", "status", "spots_in", "spots_kept", "pct_kept")
+# The per-spot table: QC metrics, positions and the QC result
+TABLE_COLUMNS <- c("cell", "sample", "dataset", "nCount_Spatial", "nFeature_Spatial", "percent.mt", "percent.ribo",
+                   "percent.hb", "array_row", "array_col", "pxl_row", "pxl_col", "x", "y", "qc_reason", "keep")
+
+## =============================================================================
+## Output folder: samplesheet.csv, summary.csv, log.txt and one folder per sample.
+## The same in scrna_qc.R, visium_qc.R and xenium_qc.R; annotate_cells.R adds to it.
+## =============================================================================
+sample_dir <- function(out_dir, dataset, sample_id) file.path(out_dir, dataset, sample_id)
+
+# Default output folder: <sheet folder>/qc_output, or, when the sheet is an output folder's own
+# samplesheet.csv, that folder (the rerun replaces its results)
+default_out_dir <- function(sheet) {
+  dir <- dirname(normalizePath(sheet, winslash = "/"))
+  if (tolower(basename(sheet)) == "samplesheet.csv" && file.exists(file.path(dir, "summary.csv"))) dir else file.path(dir, "qc_output")
 }
 
-write_overview <- function(summaries, failures, samples, out_dir) {
-  for (sid in names(failures)) {
-    summaries[[sid]] <- data.frame(dataset = samples[[sid]]$dataset, sample = sid,
-                                   status = paste("failed:", failures[[sid]]))
+# A path as written to samplesheet.csv: relative to the output folder when on the same drive, so
+# the sheet keeps working when the project folder moves (relative paths are read from the sheet's folder)
+relative_path <- function(path, from) {
+  if (length(path) != 1 || is.na(path) || !nzchar(path)) return(NA_character_)
+  a <- strsplit(normalizePath(path, winslash = "/", mustWork = FALSE), "/")[[1]]
+  b <- strsplit(normalizePath(from, winslash = "/", mustWork = FALSE), "/")[[1]]
+  same <- function(x, y) if (.Platform$OS.type == "windows") tolower(x) == tolower(y) else x == y
+  if (!same(a[1], b[1])) return(paste(a, collapse = "/"))
+  n <- 0
+  while (n < min(length(a), length(b)) && same(a[n + 1], b[n + 1])) n <- n + 1
+  rel <- c(rep("..", length(b) - n), a[-seq_len(n)])
+  if (length(rel)) paste(rel, collapse = "/") else "."
+}
+
+# Replace one sample's row in a CSV (or add it); the other rows stay as they are
+upsert_csv <- function(file, row, key = "sample_id") {
+  row <- as.data.frame(lapply(row, function(v) if (is.null(v) || !length(v) || is.na(v[1])) NA_character_ else as.character(v[1])),
+                       stringsAsFactors = FALSE, check.names = FALSE)
+  out <- row
+  if (file.exists(file)) {
+    old <- read.csv(file, colClasses = "character", na.strings = "", check.names = FALSE)
+    if (key %in% names(old)) {
+      cols <- union(names(row), names(old))
+      for (cl in setdiff(cols, names(old))) old[[cl]] <- if (nrow(old)) NA_character_ else character(0)
+      for (cl in setdiff(cols, names(row))) row[[cl]] <- NA_character_
+      out <- old[cols]
+      i <- match(row[[key]], out[[key]])
+      if (is.na(i)) out <- rbind(out, row[cols]) else out[i, ] <- row[cols]
+    }
   }
-  if (!length(summaries)) return(invisible(NULL))
-  cols <- unique(unlist(lapply(summaries, names)))
-  fill <- function(d) { for (cl in setdiff(cols, names(d))) d[[cl]] <- NA; d[cols] }
-  overview <- do.call(rbind, lapply(summaries, fill))
-  rownames(overview) <- NULL
-  write.csv(overview, file.path(out_dir, "all_samples_summary.csv"), row.names = FALSE)
-  print(overview[, intersect(c("dataset", "sample", "status", "spots_in", "spots_kept", "pct_kept"), cols)], row.names = FALSE)
-  invisible(overview)
+  write.csv(out, file, row.names = FALSE, na = "")
+  invisible(file)
+}
+
+# Change some columns of one sample's row (adding the row if it isn't there)
+update_csv_row <- function(file, id, values, key = "sample_id") {
+  old <- if (file.exists(file)) read.csv(file, colClasses = "character", na.strings = "", check.names = FALSE)
+  row <- if (!is.null(old) && id %in% old[[key]]) as.list(old[match(id, old[[key]]), , drop = FALSE]) else setNames(list(id), key)
+  for (nm in names(values)) row[[nm]] <- values[[nm]]
+  upsert_csv(file, row, key)
+}
+
+# One samplesheet.csv row: every setting the sample was run with. Given back to this script,
+# the sheet reproduces the run (cutoffs set by hand included, as cutoff_* columns).
+sheet_row <- function(p, out_dir) {
+  row <- list(sample_id = p$sample_id, path = relative_path(p$path, out_dir), dataset = p$dataset, patient = p$patient %||% NA)
+  for (nm in setdiff(names(DEFAULTS), "dataset")) row[[nm]] <- p[[nm]] %||% NA
+  if ("raw_path" %in% names(row)) row$raw_path <- relative_path(row$raw_path, out_dir)
+  for (nm in CUTOFFS) row[[paste0("cutoff_", nm)]] <- p[[paste0("cutoff_", nm)]] %||% NA
+  for (nm in names(p$extra_columns)) row[[nm]] <- p$extra_columns[[nm]]
+  row
+}
+
+# One summary.csv row: counts per QC result, the cutoffs used, and (filled in by annotate_cells.R) the labels
+summary_row <- function(r, p, manual, saved_by) {
+  sm <- summarise_sample(r)
+  th <- r$thresholds
+  row <- c(list(sample_id = r$sample_id, dataset = r$dataset, patient = p$patient %||% NA, status = "ok"),
+           as.list(sm[setdiff(names(sm), c("sample", "dataset", "status"))]))
+  for (nm in CUTOFFS) row[[paste0("cutoff_", nm)]] <- th[[nm]]
+  row$fixed_cutoffs <- if (length(manual)) paste(manual, collapse = ";") else "none"
+  for (nm in setdiff(names(th), c("sample", "dataset", CUTOFFS, names(row)))) row[[nm]] <- th[[nm]]
+  row[c("annotated_at", "cell_labels", "malignant")] <- NA            # cleared: the cells may have changed
+  if (identical(UNIT_FILE, "spots")) row[c("deconvolved_at", "rctd_mean_proportions")] <- NA
+  c(row, list(qc_saved_by = saved_by, qc_saved_at = format(Sys.time(), "%Y-%m-%d %H:%M")))
+}
+
+# Everything for one sample: <dataset>/<sample>/ (object, per-cell table, plots) and its rows in
+# samplesheet.csv and summary.csv. Saving a sample again replaces all of it, an earlier annotation
+# included (it was made on the old cells). The QC app calls this too when you save.
+# manual: the cutoffs fixed instead of the MAD rule (cutoff_* columns here; set by hand in the app)
+write_sample_outputs <- function(r, p, out_dir, manual = fixed_cutoffs(p), saved_by = SCRIPT_NAME) {
+  sdir <- sample_dir(out_dir, r$dataset, r$sample_id)
+  old <- file.path(sdir, c("qc", "doublets_ambient", "annotation", "deconvolution"))
+  unlink(old[dir.exists(old)], recursive = TRUE)
+  dir.create(sdir, recursive = TRUE, showWarnings = FALSE)
+  rds <- save_sample(r, sdir)
+  meta <- if (is.null(TABLE_COLUMNS)) r$meta else r$meta[, intersect(TABLE_COLUMNS, names(r$meta)), drop = FALSE]
+  for (nm in names(r$sample_meta)) if (!is.na(r$sample_meta[[nm]])) meta[[nm]] <- r$sample_meta[[nm]]
+  table_file <- file.path(sdir, sprintf("%s_%s.csv", r$sample_id, UNIT_FILE))
+  write.csv(meta, table_file, row.names = FALSE)
+  tryCatch(make_plots(r$meta, r$thresholds, file.path(sdir, "qc"), file.path(sdir, "doublets_ambient")),
+           error = function(e) log_msg("[%s] WARNING: plotting failed (%s)", r$sample_id, conditionMessage(e)))
+  upsert_csv(file.path(out_dir, "samplesheet.csv"), sheet_row(p, out_dir))
+  upsert_csv(file.path(out_dir, "summary.csv"), summary_row(r, p, manual, saved_by))
+  log_msg("[%s] saved to %s: %d of %d %s kept%s", r$sample_id, sdir, sum(r$meta$keep), nrow(r$meta), UNIT_FILE,
+          if (length(manual)) paste0("; fixed cutoffs (not the MAD rule): ", paste(sprintf("%s = %s", manual, unlist(r$thresholds[manual])), collapse = ", ")) else "")
+  invisible(list(dir = sdir, rds = rds, table = table_file))
+}
+
+# A sample that failed: its settings still go in samplesheet.csv (fix and rerun), and summary.csv says so
+record_failure <- function(p, out_dir, msg) {
+  upsert_csv(file.path(out_dir, "samplesheet.csv"), sheet_row(p, out_dir))
+  had <- file.exists(file.path(sample_dir(out_dir, p$dataset, p$sample_id), paste0(p$sample_id, ".rds")))
+  update_csv_row(file.path(out_dir, "summary.csv"), p$sample_id,
+                 list(dataset = p$dataset, status = paste0("failed", if (had) " (the files are from an earlier run)", ": ", msg)))
 }
 
 ## =============================================================================
 ## main(): the whole pipeline, in order
 ## =============================================================================
 main <- function(sample_sheet_path = SAMPLE_SHEET_PATH, out_dir = OUT_DIR) {
+  # 1. Set up the output folder and log
   if (!file.exists(sample_sheet_path)) stop("Sample sheet not found: ", sample_sheet_path,
                                             "\n(current working directory: ", getwd(), ")")
   sheet_dir <- dirname(normalizePath(sample_sheet_path, winslash = "/"))
-  if (is.null(out_dir)) out_dir <- file.path(sheet_dir, "qc_output")
+  if (is.null(out_dir)) out_dir <- default_out_dir(sample_sheet_path)
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
-  start_log(out_dir)
+  out_dir <- normalizePath(out_dir, winslash = "/")
+  start_log(out_dir, sample_sheet_path)
 
+  # 2. Read and check the sample sheet (stops here if anything is wrong)
   samples <- read_sample_sheet(sample_sheet_path, sheet_dir)
-  write_resolved_params(samples, out_dir)
+    log_msg("Sample sheet OK: %d sample(s) in %d dataset(s); output folder %s", length(samples),
+          length(unique(vapply(samples, `[[`, "", "dataset"))), out_dir)
 
-  results  <- list()
-  failures <- list()
+  # 3. QC and save each sample; a failure in one sample doesn't stop the others
+  ok <- character(0); failures <- list()
   for (p in samples) {
-    r <- tryCatch({
-      r <- qc_one_sample(p)
-      save_sample(r, file.path(out_dir, p$dataset))   # save now, then drop the big object
-      r$obj <- NULL
-      r
-    }, error = function(e) {
-      log_msg("[%s] FAILED: %s", p$sample_id, conditionMessage(e)); conditionMessage(e) })
-    if (is.character(r)) failures[[p$sample_id]] <- r else results[[p$sample_id]] <- r
+    r <- NULL
+    res <- tryCatch({ r <- qc_one_sample(p); write_sample_outputs(r, p, out_dir); TRUE },
+                    error = function(e) { log_msg("[%s] FAILED: %s", p$sample_id, conditionMessage(e)); conditionMessage(e) })
+    if (isTRUE(res)) ok <- c(ok, p$sample_id) else { failures[[p$sample_id]] <- res; record_failure(p, out_dir, res) }
+    gc(verbose = FALSE)
   }
 
-  summaries <- list()
-  for (ds in unique(vapply(results, function(r) r$dataset, ""))) {
-    rs <- Filter(function(r) r$dataset == ds, results)
-    summaries[[ds]] <- write_dataset_outputs(rs, file.path(out_dir, ds))
-  }
-
-  write_overview(summaries, failures, samples, out_dir)
-  log_msg("Done: %d sample(s) OK, %d failed. Outputs in %s", length(results), length(failures), out_dir)
-  invisible(list(results = results, failures = failures, out_dir = out_dir))
+  # 4. What happened
+  sm <- read.csv(file.path(out_dir, "summary.csv"), check.names = FALSE, stringsAsFactors = FALSE)
+  print(sm[sm$sample_id %in% names(samples), intersect(SUMMARY_PRINT, names(sm))], row.names = FALSE)
+  log_msg("Done: %d sample(s) OK, %d failed. Outputs in %s", length(ok), length(failures), out_dir)
+  invisible(list(ok = ok, failures = failures, out_dir = out_dir))
 }
 
 ## =============================================================================

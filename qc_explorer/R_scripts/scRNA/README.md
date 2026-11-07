@@ -44,14 +44,16 @@ Relative paths are relative to the folder the sample sheet is in. Absolute paths
 ```bash
 Rscript R_scripts/scRNA/scrna_qc.R datasets/GSE130001/samplesheet_GSE130001.csv
 # outputs go to datasets/GSE130001/qc_output/; add a second argument to choose another output folder
+# rerun with exactly the same settings: give it the output folder's own sheet (it writes back into that folder)
+Rscript R_scripts/scRNA/scrna_qc.R datasets/GSE130001/qc_output/samplesheet.csv
 ```
 
 In RStudio, make the repo root the working directory (**Session → Set Working Directory → Choose Directory…**, or open the folder as an RStudio project), set `SAMPLE_SHEET_PATH` at the top of the script, and click **Source**. After sourcing once, you can run another sheet with `main("datasets/<other>/samplesheet.csv")`.
 
 **3. Check the results.** After each run:
 
-1. Open `qc_output/all_samples_summary.csv`: how many cells each sample kept, and why the others were removed.
-2. Look at the plots in each dataset folder (see [Reading the QC plots](#reading-the-qc-plots)).
+1. Open `qc_output/summary.csv`: how many cells each sample kept, why the others were removed, and the cutoffs used.
+2. Look at the plots in each sample's `qc/` and `doublets_ambient/` folders (see [Reading the QC plots](#reading-the-qc-plots)).
 3. Document and report anything unusual about the dataset in the root README's dataset table.
 
 ---
@@ -86,16 +88,19 @@ The script checks up front that every package your sample sheet needs is install
 
 ## The sample sheet
 
-Each row is one sample. Every column except `sample_id` and `path` is optional, and a **blank cell means "use the default"**. Columns the script doesn't recognize (e.g. `notes`) are ignored. `samplesheet_template.csv` has example rows for each kind of input.
+Each row is one sample. Every column except `sample_id` and `path` is optional, and a **blank cell means "use the default"**. Columns the script doesn't recognize (e.g. `notes`) are copied as they are into the output folder's `samplesheet.csv`. `samplesheet_template.csv` has example rows for each kind of input.
+
+The output folder's `samplesheet.csv` is a sample sheet too: every sample with every setting it was run with (blanks filled in, paths relative to the output folder). Give it back to the script to rerun with exactly the same settings; the QC app writes the same sheet, so this also reproduces cutoffs set by hand in the app.
 
 ### Columns
 
 | Column | Default | What it does |
 | --- | --- | --- |
 | **What the sample is** | | |
-| `sample_id` | *required* | Unique name. Becomes the output file name (`<sample_id>_qc.rds`) and the cell-name prefix. |
+| `sample_id` | *required* | Unique name. Becomes the sample's output folder and file names (`<dataset>/<sample_id>/<sample_id>.rds`) and the cell-name prefix. |
 | `path` | *required* | 10x folder, `.h5`, dense table or `.rds` (see [Input formats](#input-formats)). |
-| `dataset` | `dataset1` | Dataset name (e.g. the GEO accession). Outputs go in `qc_output/<dataset>/`. Samples are never merged. |
+| `dataset` | `dataset1` | Dataset name (e.g. the GEO accession). Outputs go in `qc_output/<dataset>/<sample_id>/`. Samples are never merged. |
+| `patient` | blank | Patient ID (or `patient_id`). Added to every cell as `patient`, so samples from one patient can be grouped later. |
 | `format` | `auto` | `10x`, `10x_h5`, `dense`, `dense_t`, `rds`. `auto` guesses from the path. |
 | `gene_column` | `2` | Which column of a 10x features file names the genes: 1 = Ensembl ID, 2 = gene symbol. |
 | `mito_pattern` | `^MT-` | Regex for mitochondrial genes. Change only for unusual naming (e.g. `^GRCh38-MT-`). |
@@ -122,6 +127,10 @@ Each row is one sample. Every column except `sample_id` and `path` is optional, 
 | **Genes and reproducibility** | | |
 | `min_cells_gene` | `3` | Keep genes detected in at least this many of the sample's kept cells. |
 | `seed` | `1234` | Random seed for scDblFinder, DecontX and emptyDrops. |
+| **Fixed cutoffs** | | |
+| `cutoff_min_counts`, `cutoff_max_counts`, `cutoff_min_features`, `cutoff_max_features`, `cutoff_max_mito` | blank | Use this exact cutoff for this sample instead of the MAD rule (`Inf` = no maximum). Blank = the MAD rule. The QC app writes these when you set a cutoff by hand. |
+| **Annotation** | | |
+| `annot_<setting>` | blank | A setting of `annotate_cells.R` for this sample (e.g. `annot_malignant_method`). Not used by QC; kept for the annotation script. |
 
 TRUE/FALSE columns accept `TRUE/FALSE`, `T/F`, `yes/no` or `1/0`.
 
@@ -240,7 +249,7 @@ A doublet is two cells captured in one droplet. It looks like one cell expressin
 
 It runs per sample, because doublets can only form within one capture. It uses raw counts. Samples with fewer than 50 cells skip this step with a warning.
 
-Each sample gets its own **doublet score cutoff**, because the cutoff depends on how many doublets that sample is expected to have. The script records it as `doublet_threshold` in `qc_thresholds.csv`, along with `doublet_pct` (the % of scored cells called doublets), and draws it as a dashed line on `04_doublet_scores.png`. It also prints it in the log, e.g. `scDblFinder: 106 doublets among 3306 cells (3.2%; score cutoff 0.967)`. The cutoff is read from scDblFinder's own output. If that's unavailable, the script uses the lowest score among the cells scDblFinder called doublets.
+Each sample gets its own **doublet score cutoff**, because the cutoff depends on how many doublets that sample is expected to have. The script records it as `doublet_threshold` in `summary.csv`, along with `doublet_pct` (the % of scored cells called doublets), and draws it as a dashed line on `doublets_ambient/doublet_scores.png`. It also prints it in the log, e.g. `scDblFinder: 106 doublets among 3306 cells (3.2%; score cutoff 0.967)`. The cutoff is read from scDblFinder's own output. If that's unavailable, the script uses the lowest score among the cells scDblFinder called doublets.
 
 ### 6. Estimate ambient RNA (DecontX)
 
@@ -255,7 +264,7 @@ DecontX's default mode works well for single-cell data but poorly for **single-n
 
 ### 7. Drop rare genes and save
 
-Genes detected in fewer than `min_cells_gene` (3) of the sample's kept cells are dropped. Each sample is then saved as its own Seurat object.
+Genes detected in fewer than `min_cells_gene` (3) of the sample's kept cells are dropped. Each sample is then saved as its own Seurat object, in its own folder.
 
 ---
 
@@ -263,21 +272,24 @@ Genes detected in fewer than `min_cells_gene` (3) of the sample's kept cells are
 
 ```
 qc_output/
-├── all_samples_summary.csv     every sample: cells in, removed by reason, kept, status
-├── samplesheet_resolved.csv    the final value of every parameter, per sample
-├── qc_log.txt                  timestamped log, including warnings
-└── <dataset>/
-    ├── <sample_id>_qc.rds      one Seurat object per sample
-    ├── qc_thresholds.csv       the cutoffs actually used, per sample (incl. doublet score cutoff)
-    ├── cell_qc_metadata.csv    every cell (kept and removed): metrics + qc_reason
-    └── plots/                  01–05 PNGs, one panel per sample
+├── samplesheet.csv             every sample with every setting used; reusable as the input sheet
+├── summary.csv                 every sample: cells in, removed by reason, kept, cutoffs used (incl. doublet score cutoff), status
+├── log.txt                     timestamped log, including warnings; each run adds to it
+└── <dataset>/<sample_id>/
+    ├── <sample_id>.rds         the sample's Seurat object
+    ├── <sample_id>_cells.csv   every cell (kept and removed): metrics, qc_reason, doublet and ambient scores
+    ├── qc/                     01_violin_before_after.png, 02_counts_vs_genes_by_reason.png, 03_counts_vs_mito.png
+    ├── doublets_ambient/       doublet_scores.png, decontX_contamination.png (when those steps ran)
+    └── annotation/             added by annotate_cells.R
 ```
 
-**Each `<sample_id>_qc.rds`** contains:
+Rerunning a sample replaces its folder and its rows in `samplesheet.csv` and `summary.csv`; other samples' rows stay. Its earlier annotation goes too (it was made on the old cells), so annotate it again afterwards.
+
+**Each `<sample_id>.rds`** contains:
 
 - `RNA` assay: raw counts of the kept cells
 - `decontX` assay: ambient-corrected counts (if DecontX ran)
-- metadata: `sample`, `dataset`, `percent.mt`, `percent.ribo`, `percent.hb`, `log10GenesPerUMI`, `scDblFinder.score`, `decontX_contamination`
+- metadata: `sample`, `dataset`, `patient` (if given), `percent.mt`, `percent.ribo`, `percent.hb`, `log10GenesPerUMI`, `scDblFinder.score`, `decontX_contamination`
 
 ---
 
@@ -290,8 +302,8 @@ A good cutoff trims a tail and leaves the main body of the distribution alone. I
 | `01_violin_before_after.png`: UMIs, genes, % mito, before (grey) vs after (blue), with cutoffs dashed | Only the tails are removed. | A cutoff cuts into the main body → loosen that `nmads_*`. |
 | `02_counts_vs_genes_by_reason.png`: UMIs vs genes, coloured by why each cell was removed | Removed cells sit at the bottom-left or off the diagonal. | A big coloured group sits inside the grey cloud → that rule is too strict. |
 | `03_counts_vs_mito.png`: UMIs vs % mito | High-mito cells are mostly low-UMI, i.e. damaged. | Many *high-UMI* cells are above the line → it may be a real high-mito cell type; raise `mito_ceiling`. |
-| `04_doublet_scores.png`: doublet scores, with each sample's cutoff dashed and labelled | Most cells score near 0, with a small group near 1, and the cutoff sits in the gap between them. | Doublets are far more than ~5–10% of a sample, or the cutoff cuts through a big peak → check `doublet_rate`. |
-| `05_decontX_contamination.png` | Most cells are below ~0.2. | A large group is above 0.5 → consider `max_contamination` or the `decontX` assay. |
+| `doublet_scores.png`: doublet scores, with each sample's cutoff dashed and labelled | Most cells score near 0, with a small group near 1, and the cutoff sits in the gap between them. | Doublets are far more than ~5–10% of a sample, or the cutoff cuts through a big peak → check `doublet_rate`. |
+| `decontX_contamination.png` | Most cells are below ~0.2. | A large group is above 0.5 → consider `max_contamination` or the `decontX` assay. |
 
 **if you decide to make any changes to the quality control parameters, please make sure to report and document your changes**
 
@@ -307,8 +319,8 @@ A good cutoff trims a tail and leaves the main body of the distribution alone. I
 | `WARNING: counts are not whole numbers` | The file holds normalized data. Find the raw counts. |
 | `More than one matrix.mtx file in ...` | Several samples share one folder. Put each sample in its own folder. |
 | `non-numeric column(s) after the first` | The dense table is the other way round. Set `format = dense_t`. |
-| `[sample] FAILED: ...` | That sample couldn't be read. The others still finish, and the failure is listed in `all_samples_summary.csv`. |
-| `WARNING: scDblFinder failed` / `DecontX failed` | That step was skipped for that sample only. See `qc_log.txt` for the error. |
+| `[sample] FAILED: ...` | That sample couldn't be read. The others still finish, and the failure is listed in `summary.csv`. |
+| `WARNING: scDblFinder failed` / `DecontX failed` | That step was skipped for that sample only. See `log.txt` for the error. |
 
 When run with `Rscript`, the script exits with a non-zero status if any sample failed, so a SLURM job shows as failed rather than silently half-done.
 
@@ -326,11 +338,12 @@ The file is organized top to bottom as:
 | Sample sheet | `read_sample_sheet()`, `resolve_sample()`, `check_packages()` |
 | Readers | `read_counts()` and one reader per format |
 | QC steps | `load_sample()` → `call_cells()` → `compute_qc_metrics()` → `compute_thresholds()` → `apply_cell_filters()` → `detect_doublets()` → `correct_ambient()`, chained by `qc_one_sample()` |
-| Outputs | `save_sample()`, `summarise_sample()`, `make_plots()`, `write_dataset_outputs()`, `write_overview()` |
+| Per-sample outputs | `save_sample()`, `summarise_sample()`, `make_plots()` |
+| Output folder | `write_sample_outputs()` (one sample's folder and its rows in `samplesheet.csv` / `summary.csv`; the QC app calls it too), `sheet_row()`, `summary_row()`, `upsert_csv()` |
 | `main()` | runs everything in order |
 | Last lines | call `main()` |
 
-To change a default for everyone, edit `DEFAULTS`. To change it for one sample, use the sample sheet. To add a new numeric parameter, add it to `DEFAULTS` and use `p$<name>` in the step that needs it. Type checking picks it up automatically.
+To change a default for everyone, edit `DEFAULTS`. To change it for one sample, use the sample sheet (a cutoff itself: a `cutoff_<name>` column). To add a new numeric parameter, add it to `DEFAULTS` and use `p$<name>` in the step that needs it. Type checking picks it up automatically.
 
 ---
 
