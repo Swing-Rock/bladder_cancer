@@ -244,13 +244,16 @@ annotation_panels <- function(r) {
                                 c(agree = "#4C9BE8", disagree = "#C0392B", "one method only" = "#E69F00", "(pruned)" = "grey85"))))
   if ("cnv_status" %in% colnames(md))
     pl <- c(pl, list(umap_panel(obj, "cnv_status", "Malignant calls (inferred CNVs)", APP_CNV_COLOURS)))
-  if ("cnv_status" %in% colnames(md) && any(!is.na(obj$cnv_score)))
-    pl <- c(pl, list(ggplot(md, aes(cnv_score, cnv_cor, colour = cnv_status)) + geom_point(size = 0.5, alpha = 0.7, shape = 16) +
-                       scale_colour_manual(values = APP_CNV_COLOURS) + theme_qc() +
-                       guides(colour = guide_legend(override.aes = list(size = 2.5))) +
-                       theme(plot.title.position = "plot", plot.title = element_text(size = 11),
-                             legend.text = element_text(size = 8)) +
-                       labs(title = "inferCNV score vs tumour-profile correlation", x = "CNV score", y = "correlation", colour = NULL)))
+  if ("cnv_status" %in% colnames(md) && "cnv_score" %in% colnames(md) && any(!is.na(md$cnv_score))) {
+    # drawn by the annotation script's cnv_scatter(), the same as its saved 04_cnv_status.png
+    aenv <- tryCatch(get_engine("annotation"), error = function(e) NULL)
+    g <- if (!is.null(aenv$cnv_scatter))
+      tryCatch(aenv$cnv_scatter(md, obj@misc$annotation$cnv_cutoffs, APP_CNV_COLOURS,
+                                "inferCNV score vs tumour-profile correlation", base_size = 10) +
+                 theme(plot.title = element_text(face = "bold", size = 11), legend.text = element_text(size = 8)),
+               error = function(e) NULL)
+    if (!is.null(g)) pl <- c(pl, list(g))
+  }
   pl
 }
 plot_annotation_result <- function(r) wrap_plots(annotation_panels(r), ncol = 2)

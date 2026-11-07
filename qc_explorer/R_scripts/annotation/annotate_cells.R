@@ -771,6 +771,7 @@ call_malignant <- function(obj, counts, type, sample_id, params, work_dir = temp
   set.seed(params$seed)
   methods <- malignant_methods(params)
   cnv <- list(skipped = cnv_applicable(list(type = type, counts = counts), params), methods = methods)
+  obj@misc$annotation$cnv_cutoffs <- list(score_quantile = params$cnv_score_quantile, cor = params$cnv_cor_cutoff)
   if (is.na(cnv$skipped)) {
     cells <- colnames(obj)
     if (length(cells) > params$cnv_max_cells) {
@@ -1005,12 +1006,48 @@ CNV_COLOURS <- c(malignant = "#C0392B", normal = "#4C9BE8", "normal (reference)"
 
 plot_cnv <- function(obj) {
   g1 <- DimPlot(obj, group.by = "cnv_status", cols = CNV_COLOURS) + ggtitle("Malignant calls from inferred CNVs")
-  md <- obj[[]]
-  if (all(is.na(md$cnv_score))) return(g1)
-  g2 <- ggplot(md, aes(cnv_score, cnv_cor, colour = cnv_status)) + geom_point(size = 0.6, alpha = 0.7) +
-    scale_colour_manual(values = CNV_COLOURS) + theme_bw(base_size = 11) +
-    labs(title = "inferCNV: CNV score vs correlation with the tumour profile", x = "CNV score", y = "correlation", colour = NULL)
-  g1 + g2
+  g2 <- cnv_scatter(obj[[]], obj@misc$annotation$cnv_cutoffs)
+  if (is.null(g2)) g1 else g1 + g2
+}
+
+# inferCNV's two numbers per cell and the cutoffs that turn them into calls (score_cnv()):
+# malignant = score above the cnv_score_quantile of the reference cells' scores AND correlation
+# with the tumour profile above cnv_cor_cutoff, i.e. the top-right corner. The score is very
+# skewed (a few cells score far higher than the rest), so it goes on a log scale. Square, so it
+# lines up with UMAP panels. Also used by the QC app. NULL when there are no inferCNV scores.
+cnv_scatter <- function(md, cutoffs = NULL, colours = CNV_COLOURS,
+                        title = "inferCNV: CNV score vs correlation with the tumour profile", base_size = 11) {
+  if (!all(c("cnv_score", "cnv_cor") %in% names(md))) return(NULL)
+  md <- md[!is.na(md$cnv_score) & !is.na(md$cnv_cor), , drop = FALSE]
+  if (!nrow(md)) return(NULL)
+  cutoffs <- cutoffs %||% list(score_quantile = PARAMS$cnv_score_quantile, cor = PARAMS$cnv_cor_cutoff)
+  ref <- if ("infercnv_call" %in% names(md)) md$infercnv_call %in% "reference" else rep(FALSE, nrow(md))
+  score_cut <- if (any(ref)) unname(stats::quantile(md$cnv_score[ref], cutoffs$score_quantile)) else NA_real_
+  st <- as.character(if ("cnv_status" %in% names(md)) md$cnv_status else md$infercnv_call)
+  st[is.na(st)] <- "unresolved"
+  draw_order <- c("not tested", "normal (reference)", "reference", "normal", "unresolved", "uncertain", "malignant")
+  md$status <- factor(st, levels = c(intersect(draw_order, unique(st)), setdiff(unique(st), draw_order)))
+  md <- md[order(as.integer(md$status)), , drop = FALSE]                 # malignant drawn last, on top
+  md$x <- pmax(md$cnv_score, min(md$cnv_score[md$cnv_score > 0]))        # log scale: no zeros
+  cols <- c(colours, reference = colours[["normal (reference)"]] %||% "grey70")
+  g <- ggplot(md, aes(x, cnv_cor, colour = status))
+  if (!is.na(score_cut))
+    g <- g + annotate("rect", xmin = score_cut, xmax = Inf, ymin = cutoffs$cor, ymax = Inf,
+                      fill = cols[["malignant"]] %||% "#C0392B", alpha = 0.07) +
+      geom_vline(xintercept = score_cut, linetype = "dashed", colour = "grey30", linewidth = 0.4)
+  g + geom_hline(yintercept = cutoffs$cor, linetype = "dashed", colour = "grey30", linewidth = 0.4) +
+    geom_point(size = 0.6, alpha = 0.6, shape = 16) +
+    scale_x_log10() +
+    scale_colour_manual(values = cols, drop = TRUE) +
+    guides(colour = guide_legend(override.aes = list(size = 2.5, alpha = 1))) +
+    labs(title = title,
+         subtitle = sprintf("Malignant = shaded corner (dashed cutoffs):\nscore > %s percentile of reference cells, correlation > %s",
+                            paste0(round(100 * cutoffs$score_quantile), "th"), format(cutoffs$cor)),
+         x = "CNV score (log scale)", y = "correlation with tumour profile", colour = NULL) +
+    theme_bw(base_size = base_size) +
+    theme(aspect.ratio = 1, panel.grid.minor = element_blank(), legend.position = "bottom",
+          plot.title = element_text(face = "bold"), plot.subtitle = element_text(size = rel(0.75), colour = "grey30"),
+          plot.title.position = "plot")
 }
 
 # What an earlier annotation added to an object (stale once the labels are made again)

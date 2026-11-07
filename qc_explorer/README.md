@@ -84,6 +84,18 @@ Open `run_app.R` (in the repo root) in RStudio and click **Source**. Then:
 
 See [`app_scripts/README.md`](app_scripts/README.md) for the full walkthrough: dataset batches, patient IDs, annotation and dataset-level runs.
 
+**If the whole page turns grey** and stops responding, the browser has lost its connection to R. The app runs inside R, in RStudio, and the page is only a window onto it. Common causes are the computer going to sleep, the browser putting the tab to sleep, R stopping after an error, or R running out of memory with too many large samples loaded. What to do:
+
+1. **Look at the RStudio console.**
+   - **The red stop sign is still showing** (R is still running the app): just reload the browser page.
+   - **The console is back at the `>` prompt** (the app stopped): read the last lines for the error, then click **Source** on `run_app.R` again.
+2. **Load your data again.** What was loaded lives in the page and is gone. Everything you **saved** is safe on disk. With *Skip samples already saved in the output folder* ticked, a dataset picks up where you left off.
+3. **Annotation runs aren't lost** as long as R kept running. They finish in the background, and annotating the same sample again reuses their results instead of starting over.
+
+To avoid it during long runs, keep the computer awake and stop the browser from putting the tab to sleep (Edge: *Settings → System and performance → Never put these sites to sleep*, add `127.0.0.1`; Chrome: *Settings → Performance → Always keep these sites active*). If it happens right after loading a big batch, R probably ran out of memory: lower *Max samples in memory at once* (in the *Advanced settings* panel, under *Dataset mode*; default 8) and load again.
+
+Not the same thing: single **samples greyed out with a spinner** in the sample list are just queued for a background step. They become clickable when their turn is done.
+
 ### With the scripts
 
 Write a sample sheet (start from the template in each script's folder), then run from the repo root:
