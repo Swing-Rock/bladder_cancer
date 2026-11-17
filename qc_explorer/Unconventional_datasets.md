@@ -9,7 +9,6 @@ Most GEO series load as they are: point the app (or a sample sheet) at a Cell Ra
 | [GSE149652](#gse149652) | scRNA-seq | Plain CSV count tables; sorted T cells only | Load the per-sample `*_count_matrice.csv.gz` files as `dense`; skip the malignant-cell step |
 | [GSE171351](#gse171351) | Visium | Every section in one `.h5ad` | Pick the `.h5ad`; the app splits it into one folder per section |
 | [GSE246011](#gse246011) | Visium | Loose files per sample (CSV counts + coordinates + TIFF), no Space Ranger folder; mixed cancer types | Put the bladder samples' files in their own folder and load it; the app converts them |
-
 | [GSE345644](#gse345644) | Xenium | Cell table is `cells.parquet.gz` | Unzip it to `cells.parquet` before QC |
 | [DUTRENEO](#dutreneo-zenodo-19693316) | Xenium | One 30 GB Zenodo zip of full Xenium folders; cell table is `cells.parquet`; response labels in a separate file | Extract only `cell_feature_matrix.h5` + `cells.parquet` per sample; put labels in the sheet's `notes` |
 | [GSE319536](#gse319536) | Visium | Loose per-sample GEO files with GSM prefixes and `.gz`, no Space Ranger folder | Rename into `<sample>/filtered_feature_bc_matrix.h5` + `<sample>/spatial/`; `format = spaceranger` |
